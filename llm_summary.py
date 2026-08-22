@@ -234,6 +234,8 @@ def summarize_one(story, model=None, effort="low", name=None, thinking=False):
     """
     name = name or provider()
     chain = model_chain(model or default_model(name))
+    if not chain:
+        return {"error": "daily quota spent on every model in the chain"}
     client = _get_client(name)
     if client is None:
         return {"error": "no credentials"}
@@ -280,8 +282,10 @@ def model_chain(spec):
     """"a,b,c" -> ["a", "b", "c"], dropping models with a spent daily quota."""
     models = [m.strip() for m in (spec or "").split(",") if m.strip()]
     now = time.monotonic()
-    live = [m for m in models if now - _exhausted.get(m, -1e9) > QUOTA_COOLDOWN]
-    return live or models[-1:]           # if all are spent, still try the last
+    # When every model in the chain is spent, return nothing rather than burning
+    # another request to rediscover it — daily quotas reset on Google's clock,
+    # not ours.
+    return [m for m in models if now - _exhausted.get(m, -1e9) > QUOTA_COOLDOWN]
 
 
 def _result(text, model, tin, tout):
