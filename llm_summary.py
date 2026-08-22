@@ -27,6 +27,7 @@ import concurrent.futures as futures
 import hashlib
 import json
 import os
+import random
 import threading
 import time
 
@@ -41,6 +42,13 @@ DEFAULT_MODELS = {
 # rather than fired in parallel, because a 429 here costs a whole summary.
 PROVIDER_RPM = {"gemini": 10, "anthropic": 0}     # 0 = no client-side throttle
 PROVIDER_WORKERS = {"gemini": 2, "anthropic": 8}
+
+# Free tiers return 503/429 under load far more often than paid ones, and a
+# transient overload should not cost a story its summary.
+RETRY_ATTEMPTS = 4
+RETRY_BASE_DELAY = 2.0
+RETRYABLE = ("429", "500", "502", "503", "504", "unavailable", "overloaded",
+             "resource_exhausted", "rate limit", "timeout", "deadline")
 
 MAX_HEADLINES = 26          # bounds prompt size on very widely-covered stories
 CACHE_MAX_AGE = 14 * 86400  # forget summaries for stories that fell out of the feeds
@@ -193,20 +201,49 @@ def build_prompt(story):
     return prompt
 
 
-def summarize_one(story, model=None, effort="low", name=None):
+def parse_model(spec):
+    """"gemini-3.7-flash#think" -> ("gemini-3.7-flash", True).
+
+    Thinking is off by default for this task: a 45-word factual summary rarely
+    needs it, and on Gemini the thinking budget competes with the answer for the
+    same output-token allowance. The suffix turns it back on so the two can be
+    compared directly.
+    """
+    if spec and "#" in spec:
+        base, _, flag = spec.partition("#")
+        return base, flag.lower() in ("think", "thinking", "extended")
+    return spec, False
+
+
+def summarize_one(story, model=None, effort="low", name=None, thinking=False):
     """One story -> summary dict, or {"error": ...} on failure. Never raises."""
     name = name or provider()
-    model = model or default_model(name)
+    model, spec_thinking = parse_model(model or default_model(name))
+    thinking = thinking or spec_thinking
     client = _get_client(name)
     if client is None:
         return {"error": "no credentials"}
-    _throttle(PROVIDER_RPM.get(name, 0))
-    try:
-        if name == "gemini":
-            return _call_gemini(client, model, story)
-        return _call_anthropic(client, model, story, effort)
-    except Exception as exc:                       # noqa: BLE001 - degrade, never break
-        return {"error": f"{type(exc).__name__}: {exc}"}
+    rpm = PROVIDER_RPM.get(name, 0)
+    last = None
+    for attempt in range(RETRY_ATTEMPTS):
+        _throttle(rpm)
+        try:
+            if name == "gemini":
+                return _call_gemini(client, model, story, thinking)
+            return _call_anthropic(client, model, story, effort)
+        except Exception as exc:                   # noqa: BLE001 - degrade, never break
+            last = f"{type(exc).__name__}: {exc}"
+            if attempt == RETRY_ATTEMPTS - 1 or not _retryable(last):
+                break
+            # Exponential backoff with jitter, so parallel workers don't all
+            # come back at the same instant and re-trigger the overload.
+            time.sleep(RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1.5))
+    return {"error": last or "unknown failure"}
+
+
+def _retryable(message):
+    low = message.lower()
+    return any(token in low for token in RETRYABLE)
 
 
 def _result(text, model, tin, tout):
@@ -234,34 +271,52 @@ def _call_anthropic(client, model, story, effort):
     return out
 
 
-def _call_gemini(client, model, story):
+def _call_gemini(client, model, story, thinking=False):
     from google.genai import types
 
-    config = {
+    base = {
         "system_instruction": SYSTEM,
-        "max_output_tokens": 1200,    # Gemini counts thinking toward this budget
+        # Gemini counts thinking toward this budget, so leave real headroom when
+        # thinking is on or the answer gets squeezed out entirely.
+        "max_output_tokens": 8000 if thinking else 1200,
         "temperature": 0.2,
     }
-    # Newer Gemini models think by default; a 45-word factual summary doesn't need
-    # it, and the budget competes with the answer for max_output_tokens.
+    # -1 lets the model decide how much to think; 0 turns it off. Not every model
+    # accepts the field — several reject a 0 budget with 400 INVALID_ARGUMENT
+    # because thinking is mandatory for them — so fall back to the model default.
+    configs = []
     try:
-        config["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        configs.append(dict(base, thinking_config=types.ThinkingConfig(
+            thinking_budget=-1 if thinking else 0)))
     except Exception:                              # noqa: BLE001 - older SDKs lack it
         pass
+    configs.append(dict(base, max_output_tokens=8000))
 
-    response = client.models.generate_content(
-        model=model,
-        contents=build_prompt(story),
-        config=types.GenerateContentConfig(**config),
-    )
+    response, last = None, None
+    for index, config in enumerate(configs):
+        try:
+            response = client.models.generate_content(
+                model=model, contents=build_prompt(story),
+                config=types.GenerateContentConfig(**config))
+            break
+        except Exception as exc:                   # noqa: BLE001
+            last = exc
+            if index == len(configs) - 1 or "INVALID_ARGUMENT" not in str(exc):
+                raise
+    if response is None:
+        raise last
+
     text = (getattr(response, "text", None) or "").strip()
     if not text:
         reason = getattr(response, "prompt_feedback", None)
         return {"error": f"empty response ({reason})"}
     usage = getattr(response, "usage_metadata", None)
-    return _result(text, model,
-                   getattr(usage, "prompt_token_count", 0),
-                   getattr(usage, "candidates_token_count", 0))
+    thought = getattr(usage, "thoughts_token_count", 0) or 0
+    out = _result(text, model + ("#think" if thinking else ""),
+                  getattr(usage, "prompt_token_count", 0),
+                  (getattr(usage, "candidates_token_count", 0) or 0) + thought)
+    out["usage"]["thinking"] = thought
+    return out
 
 
 # ------------------------------------------------------------------ the driver
@@ -320,7 +375,9 @@ def apply(stories, model=None, max_workers=None, limit=None, log=print):
                 consecutive[0] += 1
                 if first_error[0] is None:
                     first_error[0] = result["error"]
-                if consecutive[0] >= 3:
+                # Only give up early on errors that retrying cannot fix — a bad
+                # key or a bad model name. Overloads already exhausted retries.
+                if consecutive[0] >= 3 and not _retryable(result["error"]):
                     abort.set()
             else:
                 consecutive[0] = 0

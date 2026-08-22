@@ -44,6 +44,10 @@ def provider_for(model):
     return "gemini" if model.startswith("gemini") else "anthropic"
 
 
+def base_model(spec):
+    return spec.split("#")[0]
+
+
 def pick(stories, count):
     """Hardest first: most outlets, widest spread of leans, blindspots included."""
     def hardness(story):
@@ -100,13 +104,13 @@ def main():
         print(f"  {story['outlet_count']} outlets · {bar}{flag}")
         extract = (story.get("consensus") or {}).get("text")
         if extract:
-            print("\n  " + "\033[2m" + "extractive".ljust(16) + "\033[0m"
-                  + textwrap.fill(extract, 78, subsequent_indent=" " * 18)[18:])
+            print("\n  " + "\033[2m" + "extractive".ljust(22) + "\033[0m"
+                  + textwrap.fill(extract, 76, subsequent_indent=" " * 18))
         for model in models:
             res = results.get((model, story["id"]))
             text = res.get("text") if res and "text" in res else f"FAILED: {res}"
-            print("\n  " + model.ljust(16)
-                  + textwrap.fill(text, 78, subsequent_indent=" " * 18)[18:])
+            print("\n  " + model.ljust(22)
+                  + textwrap.fill(text, 76, subsequent_indent=" " * 18))
         print()
 
     print("=" * 96)
@@ -114,11 +118,11 @@ def main():
           f"{NEW_STORIES_PER_DAY} new stories/day")
     for model in models:
         tin, tout = totals[model]
-        pin, pout = PRICING.get(model, (0, 0))
+        pin, pout = PRICING.get(base_model(model), (0, 0))
         cost = tin / 1e6 * pin + tout / 1e6 * pout
         per_story = cost / max(len(chosen), 1)
         monthly = per_story * NEW_STORIES_PER_DAY * 30
-        free = model in PRICING and PRICING[model] == (0.0, 0.0)
+        free = PRICING.get(base_model(model)) == (0.0, 0.0)
         print(f"{model:<22} {tin:>8} {tout:>8} "
               f"{'free' if free else format(per_story, '.5f'):>10} "
               f"{'free' if free else format(monthly, '.2f'):>10}")
