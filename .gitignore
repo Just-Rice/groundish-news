@@ -1,0 +1,4 @@
+data/cache/
+data/stories.json
+__pycache__/
+*.pyc
