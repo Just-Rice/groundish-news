@@ -34,10 +34,19 @@ import time
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CACHE_PATH = os.path.join(DATA, "summaries.json")
 
+# Comma-separated chains are tried in order. Google's free-tier quota is scoped
+# per project *per model* (the quotaId is literally
+# "GenerateRequestsPerDayPerProjectPerModel-FreeTier"), so each model carries its
+# own daily allowance and falling through to the next one when a quota is spent
+# multiplies the usable budget on a single key. Extra API keys do NOT help —
+# they share the project's quota.
 DEFAULT_MODELS = {
-    "gemini": "gemini-3.7-flash",     # Pro models left Google's free tier in Apr 2026
+    "gemini": "gemini-3.6-flash,gemini-3.5-flash,gemini-3-flash-preview,"
+              "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.7-flash",
     "anthropic": "claude-opus-5",
 }
+QUOTA_MARKERS = ("resource_exhausted", "quota", "429")
+QUOTA_COOLDOWN = 2 * 3600      # stop retrying a spent model for a while
 # Google's free tier allows roughly 10 requests/minute. Requests are spaced out
 # rather than fired in parallel, because a 429 here costs a whole summary.
 PROVIDER_RPM = {"gemini": 10, "anthropic": 0}     # 0 = no client-side throttle
@@ -77,6 +86,7 @@ _client_lock = threading.Lock()
 _cache_lock = threading.Lock()
 _rate_lock = threading.Lock()
 _last_call = [0.0]
+_exhausted = {}                # model -> time its daily quota ran out
 
 
 def provider():
@@ -216,34 +226,62 @@ def parse_model(spec):
 
 
 def summarize_one(story, model=None, effort="low", name=None, thinking=False):
-    """One story -> summary dict, or {"error": ...} on failure. Never raises."""
+    """One story -> summary dict, or {"error": ...} on failure. Never raises.
+
+    `model` may be a comma-separated chain. Each entry is tried in turn; a model
+    whose daily quota is spent is remembered and skipped for a couple of hours so
+    later stories in the same run don't waste a request rediscovering it.
+    """
     name = name or provider()
-    model, spec_thinking = parse_model(model or default_model(name))
-    thinking = thinking or spec_thinking
+    chain = model_chain(model or default_model(name))
     client = _get_client(name)
     if client is None:
         return {"error": "no credentials"}
-    rpm = PROVIDER_RPM.get(name, 0)
+
     last = None
-    for attempt in range(RETRY_ATTEMPTS):
-        _throttle(rpm)
-        try:
-            if name == "gemini":
-                return _call_gemini(client, model, story, thinking)
-            return _call_anthropic(client, model, story, effort)
-        except Exception as exc:                   # noqa: BLE001 - degrade, never break
-            last = f"{type(exc).__name__}: {exc}"
-            if attempt == RETRY_ATTEMPTS - 1 or not _retryable(last):
-                break
-            # Exponential backoff with jitter, so parallel workers don't all
-            # come back at the same instant and re-trigger the overload.
-            time.sleep(RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1.5))
+    for spec in chain:
+        base_model, spec_thinking = parse_model(spec)
+        want_thinking = thinking or spec_thinking
+        for attempt in range(RETRY_ATTEMPTS):
+            _throttle(PROVIDER_RPM.get(name, 0))
+            try:
+                if name == "gemini":
+                    return _call_gemini(client, base_model, story, want_thinking)
+                return _call_anthropic(client, base_model, story, effort)
+            except Exception as exc:               # noqa: BLE001 - degrade, never break
+                last = f"{type(exc).__name__}: {exc}"
+                if _is_quota(last):
+                    _exhausted[spec] = time.monotonic()
+                    break                          # move to the next model
+                if attempt == RETRY_ATTEMPTS - 1 or not _retryable(last):
+                    break
+                # Backoff with jitter so parallel workers don't retry in lockstep.
+                time.sleep(RETRY_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1.5))
+        else:
+            continue
+        if not _is_quota(last or ""):
+            break                                  # a real error: stop walking
     return {"error": last or "unknown failure"}
 
 
 def _retryable(message):
     low = message.lower()
+    if _is_quota(message):
+        return False           # a spent daily quota will not recover on retry
     return any(token in low for token in RETRYABLE)
+
+
+def _is_quota(message):
+    low = message.lower()
+    return any(token in low for token in QUOTA_MARKERS)
+
+
+def model_chain(spec):
+    """"a,b,c" -> ["a", "b", "c"], dropping models with a spent daily quota."""
+    models = [m.strip() for m in (spec or "").split(",") if m.strip()]
+    now = time.monotonic()
+    live = [m for m in models if now - _exhausted.get(m, -1e9) > QUOTA_COOLDOWN]
+    return live or models[-1:]           # if all are spent, still try the last
 
 
 def _result(text, model, tin, tout):
@@ -330,8 +368,8 @@ def apply(stories, model=None, max_workers=None, limit=None, log=print):
     model = model or default_model(name)
     if max_workers is None:
         max_workers = PROVIDER_WORKERS.get(name, 4)
-    stats = {"cached": 0, "written": 0, "failed": 0, "skipped": 0,
-             "input_tokens": 0, "output_tokens": 0, "model": model, "provider": name}
+    stats = {"cached": 0, "written": 0, "failed": 0, "skipped": 0, "input_tokens": 0,
+             "output_tokens": 0, "model": model, "provider": name, "models_used": {}}
     if not available(name):
         stats["skipped"] = len(stories)
         return stats
@@ -389,6 +427,8 @@ def apply(stories, model=None, max_workers=None, limit=None, log=print):
                 stats["failed"] += 1
                 continue          # story keeps its extractive consensus
             stats["written"] += 1
+            served = result.get("model", "?")
+            stats["models_used"][served] = stats["models_used"].get(served, 0) + 1
             stats["input_tokens"] += result["usage"]["input"]
             stats["output_tokens"] += result["usage"]["output"]
             with _cache_lock:
