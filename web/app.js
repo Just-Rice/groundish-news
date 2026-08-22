@@ -17,6 +17,103 @@ const el = (tag, cls, text) => {
   return node;
 };
 
+
+/* ---------------------------------------------------------------- data source
+   The same front end runs two ways: against the Python API when server.py is
+   serving it, and against a pre-built JSON bundle on GitHub Pages, where there
+   is no server and the browser cannot fetch RSS feeds itself (news sites send
+   no CORS headers). It probes for the API once on load and falls back.
+
+   Every path here is relative, because Pages serves the site from a
+   /<repo-name>/ sub-path where absolute paths would miss. */
+const Data = {
+  mode: null,
+  bundle: null,
+
+  async init() {
+    try {
+      const res = await fetch("api/meta", { cache: "no-store" });
+      if (res.ok) {
+        this.mode = "server";
+        return this.mode;
+      }
+    } catch (_) { /* no API here — fall through to the static bundle */ }
+    const res = await fetch("data/bundle.json", { cache: "no-store" });
+    if (!res.ok) throw new Error("no API and no data bundle");
+    this.bundle = await res.json();
+    this.mode = "static";
+    return this.mode;
+  },
+
+  async meta() {
+    if (this.mode === "server") return (await fetch("api/meta")).json();
+    return this.bundle.meta;
+  },
+
+  async sources() {
+    if (this.mode === "server") return (await fetch("api/sources")).json();
+    return { sources: this.bundle.sources, meta: this.bundle.meta,
+             buckets: BUCKETS.map(([slug, label]) => ({ slug, label })) };
+  },
+
+  async story(id) {
+    if (this.mode === "server") {
+      const res = await fetch("api/story/" + encodeURIComponent(id));
+      return res.ok ? res.json() : null;
+    }
+    return this.bundle.stories.find((s) => s.id === id) || null;
+  },
+
+  /* Mirrors filter_stories() and _slim() in server.py so both modes agree. */
+  async stories(params) {
+    if (this.mode === "server") {
+      const res = await fetch("api/stories?" + params);
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || "request failed");
+      return payload;
+    }
+    const q = (params.get("q") || "").trim().toLowerCase();
+    const blindspot = params.get("blindspot") || "";
+    const minOutlets = parseInt(params.get("min_outlets") || "2", 10);
+    const sort = params.get("sort") || "rank";
+    const limit = parseInt(params.get("limit") || "60", 10);
+
+    let out = this.bundle.stories.filter((s) => {
+      if (s.outlet_count < minOutlets) return false;
+      if (blindspot === "any" && !s.blindspot) return false;
+      if ((blindspot === "left" || blindspot === "right") && s.blindspot !== blindspot) return false;
+      if (q) {
+        const hay = (s.title + " " + s.summary + " " +
+                     s.articles.map((a) => a.source).join(" ")).toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+
+    const keys = {
+      rank: (a, b) => b.rank - a.rank,
+      outlets: (a, b) => b.outlet_count - a.outlet_count,
+      newest: (a, b) => (b.last_published || "").localeCompare(a.last_published || ""),
+      left: (a, b) => a.skew - b.skew,
+      right: (a, b) => b.skew - a.skew,
+    };
+    out.sort(keys[sort] || keys.rank);
+
+    return {
+      meta: this.bundle.meta,
+      total: out.length,
+      stories: out.slice(0, limit).map((s) => ({
+        ...s,
+        articles: undefined,
+        framing: s.framing.map((f) => ({
+          lean_slug: f.lean_slug, lean_label: f.lean_label, count: f.count,
+          title: f.article.title, source: f.article.source, url: f.article.url,
+        })),
+      })),
+    };
+  },
+};
+
 /* ------------------------------------------------------------- utilities */
 function ago(iso) {
   if (!iso) return "";
@@ -180,9 +277,8 @@ function articleLink(item, leanSlug) {
 
 /* -------------------------------------------------------------- the modal */
 async function openStory(id) {
-  const res = await fetch("/api/story/" + encodeURIComponent(id));
-  if (!res.ok) return;
-  const story = await res.json();
+  const story = await Data.story(id);
+  if (!story) return;
   const body = $("#modal-body");
   body.textContent = "";
 
@@ -309,17 +405,17 @@ async function renderStories(onlyBlindspots) {
   let payload;
   for (let attempt = 0; ; attempt++) {
     try {
-      const res = await fetch("/api/stories?" + params);
-      payload = await res.json();
-      if (res.status === 503 && attempt < 45) {
+      payload = await Data.stories(params);
+      break;
+    } catch (err) {
+      // On a cold start the server is still pulling ~100 feeds and answers 503.
+      // Wait it out rather than showing an error on someone's first visit.
+      if (/still fetching|503/.test(err.message) && attempt < 45) {
         view.textContent = "";
         view.appendChild(loading("Pulling the first batch of feeds — about ten seconds…"));
         await new Promise((r) => setTimeout(r, 1500));
         continue;
       }
-      if (!res.ok) throw new Error(payload.error || "request failed");
-      break;
-    } catch (err) {
       view.textContent = "";
       view.appendChild(el("div", "empty", err.message));
       return;
@@ -359,7 +455,7 @@ async function renderSources() {
   const view = $("#view");
   view.textContent = "";
   view.appendChild(loading("Loading sources…"));
-  const payload = await (await fetch("/api/sources")).json();
+  const payload = await Data.sources();
   state.sources = payload;
   state.meta = payload.meta;
   updateChrome();
@@ -432,7 +528,7 @@ async function renderBias() {
   // have arrived yet, so wait for it rather than silently dropping the bar.
   if (!state.meta) {
     try {
-      state.meta = await (await fetch("/api/meta")).json();
+      state.meta = await Data.meta();
       updateChrome();
     } catch (_) { /* comparison bar is optional */ }
   }
@@ -592,7 +688,7 @@ async function pollRefresh() {
   $("#freshness").textContent = "Fetching feeds…";
   for (let i = 0; i < 90; i++) {
     await new Promise((r) => setTimeout(r, 1000));
-    const status = await (await fetch("/api/status")).json();
+    const status = await (await fetch("api/status")).json();
     if (!status.refreshing) {
       state.meta = status.meta;
       break;
@@ -621,7 +717,18 @@ function route() {
   if (view !== state.rendered) show(view);
 }
 
-function init() {
+async function init() {
+  try {
+    await Data.init();
+  } catch (err) {
+    $("#view").appendChild(el("div", "empty", "Could not load story data: " + err.message));
+    return;
+  }
+  if (Data.mode === "static") {
+    // Nothing to refresh on a static host — the data is rebuilt by CI.
+    $("#refresh").hidden = true;
+  }
+
   $("#tabs").addEventListener("click", (event) => {
     const tab = event.target.closest(".tab");
     if (tab) navigate(tab.dataset.view);
@@ -631,7 +738,7 @@ function init() {
   });
   window.addEventListener("hashchange", route);
   $("#refresh").addEventListener("click", async () => {
-    await fetch("/api/refresh", { method: "POST" });
+    await fetch("api/refresh", { method: "POST" });
     pollRefresh();
   });
   $("#modal-close").addEventListener("click", () => closeModal());
@@ -652,7 +759,7 @@ function init() {
   $("#min_outlets").addEventListener("change", rerun);
 
   // Header chrome (freshness, blindspot count) should be right on any entry view.
-  fetch("/api/meta").then((r) => r.json()).then((meta) => {
+  Data.meta().then((meta) => {
     state.meta = meta;
     updateChrome();
   }).catch(() => {});

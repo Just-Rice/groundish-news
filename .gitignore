@@ -1,5 +1,6 @@
 data/cache/
 data/stories.json
 data/summaries.json
+docs/
 __pycache__/
 *.pyc
