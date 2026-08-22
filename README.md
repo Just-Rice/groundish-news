@@ -97,18 +97,36 @@ and a Jaccard check stops the second sentence from restating the first. In testi
 It is a consensus extract, **not** neutral prose written from scratch, and the app
 says so under every summary.
 
-## Optional: Claude-written summaries
+## Optional: LLM-written summaries
 
 The extractive summary is the default and needs nothing. If you want summaries
-written from scratch rather than stitched from outlet sentences, set a key:
+written from scratch rather than stitched from outlet sentences, set one key.
+Two providers work; use whichever you have.
 
 ```bash
+# Google Gemini — free tier, no credit card
+pip install google-genai
+export GEMINI_API_KEY=...                # from aistudio.google.com/apikey
+python3 pipeline.py
+
+# Anthropic Claude — no free tier, pay-as-you-go
 pip install anthropic
 export ANTHROPIC_API_KEY=sk-ant-...      # or: ant auth login
 python3 pipeline.py
 ```
 
-That is the only non-stdlib dependency in the project and it is entirely optional.
+Whichever key is present is used. Force one with `GROUNDISH_LLM=gemini` or
+`GROUNDISH_LLM=anthropic`, and pick a model with `GROUNDISH_MODEL=...`.
+
+**On the free tier.** Google gives Gemini Flash models away up to roughly 1,000
+requests a day, which comfortably covers this project's ~90 new stories a day.
+The tradeoff is real though: Pro-tier Gemini models left the free tier in April
+2026, so you get Flash; free-tier requests may be used to improve Google's
+products (irrelevant here — the input is public headlines); and the ~10
+requests/minute limit means the initial backfill of ~200 stories takes about 20
+minutes. Requests are spaced out automatically to stay under it.
+
+The SDKs are the only non-stdlib dependencies in the project and both are optional.
 With no key, no SDK, an API error, a rate limit, or a refusal, stories keep their
 extract — every failure path falls back rather than breaking a refresh, and a run
 of failures trips a circuit breaker so a bad key costs one request, not one per story.
@@ -122,14 +140,17 @@ cheapest model and produce identical text; the cache brings that to a few dollar
 
 | Model | Price (in/out per Mtok) | ~Cost/month |
 | --- | --- | --- |
-| `claude-opus-5` (default) | $5 / $25 | ~$15 |
+| `gemini-3.7-flash` (default when a Gemini key is set) | free tier | **free** |
+| `gemini-3.5-flash-lite` | free tier | **free** |
+| `claude-opus-5` (default when an Anthropic key is set) | $5 / $25 | ~$15 |
 | `claude-sonnet-5` | $2 / $10 intro through 2026-08-31, then $3 / $15 | ~$6, then ~$9 |
 | `claude-haiku-4-5` | $1 / $5 | ~$3 |
 
-Pick one with `GROUNDISH_MODEL=claude-sonnet-5 python3 pipeline.py`, or compare
-them on your own stories first:
+Compare them on your own stories before committing — models from different
+providers can go head to head in one run:
 
 ```bash
+python3 bakeoff.py 20 gemini-3.7-flash gemini-3.5-flash-lite
 python3 bakeoff.py 20 claude-opus-5 claude-sonnet-5
 ```
 

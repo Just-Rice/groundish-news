@@ -1,14 +1,20 @@
 """LLM-written story summaries, with the extractive summarizer as the fallback.
 
 This is the only part of Groundish News that is not standard-library-only, and it
-is entirely optional. It activates when both of these are true:
+is entirely optional. Two providers are supported; pick whichever you have.
 
-    pip install anthropic          # the official Anthropic SDK
-    export ANTHROPIC_API_KEY=...   # or `ant auth login`
+    # Google Gemini — has a genuinely free API tier, no credit card
+    pip install google-genai
+    export GEMINI_API_KEY=...       # from aistudio.google.com/apikey
 
-Without either, `available()` returns False, nothing here runs, and stories keep
-the consensus extract that summarize.py produces. Same for an API error, a rate
-limit, or a refusal — every failure path falls back rather than breaking a refresh.
+    # Anthropic Claude — no free tier, pay-as-you-go
+    pip install anthropic
+    export ANTHROPIC_API_KEY=...    # or `ant auth login`
+
+Whichever key is present is used; set GROUNDISH_LLM=gemini|anthropic to force one.
+With neither, `available()` returns False, nothing here runs, and stories keep the
+consensus extract that summarize.py produces. Same for an API error, a rate limit,
+or a refusal — every failure path falls back rather than breaking a refresh.
 
 COST CONTROL
     Summaries are cached on disk and keyed to a story's identity, not to the
@@ -27,7 +33,15 @@ import time
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 CACHE_PATH = os.path.join(DATA, "summaries.json")
 
-DEFAULT_MODEL = os.environ.get("GROUNDISH_MODEL", "claude-opus-5")
+DEFAULT_MODELS = {
+    "gemini": "gemini-3.7-flash",     # Pro models left Google's free tier in Apr 2026
+    "anthropic": "claude-opus-5",
+}
+# Google's free tier allows roughly 10 requests/minute. Requests are spaced out
+# rather than fired in parallel, because a 429 here costs a whole summary.
+PROVIDER_RPM = {"gemini": 10, "anthropic": 0}     # 0 = no client-side throttle
+PROVIDER_WORKERS = {"gemini": 2, "anthropic": 8}
+
 MAX_HEADLINES = 26          # bounds prompt size on very widely-covered stories
 CACHE_MAX_AGE = 14 * 86400  # forget summaries for stories that fell out of the feeds
 
@@ -50,9 +64,37 @@ not consensus.
 
 Return the summary text and nothing else."""
 
-_client = None
+_clients = {}
 _client_lock = threading.Lock()
 _cache_lock = threading.Lock()
+_rate_lock = threading.Lock()
+_last_call = [0.0]
+
+
+def provider():
+    """Which backend to use: an explicit override, else whichever key exists."""
+    forced = os.environ.get("GROUNDISH_LLM", "").strip().lower()
+    if forced in DEFAULT_MODELS:
+        return forced
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini"
+    return "anthropic"
+
+
+def default_model(name=None):
+    return os.environ.get("GROUNDISH_MODEL") or DEFAULT_MODELS[name or provider()]
+
+
+def _throttle(rpm):
+    """Space requests out so a free-tier rate limit isn't tripped."""
+    if not rpm:
+        return
+    interval = 60.0 / rpm
+    with _rate_lock:
+        wait = _last_call[0] + interval - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _last_call[0] = time.monotonic()
 
 
 def _has_credentials():
@@ -62,6 +104,8 @@ def _has_credentials():
     and only fails when a request is made, so without this every story in a refresh
     would fire a doomed request before falling back.
     """
+    if provider() == "gemini":
+        return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
         return True
     if os.environ.get("ANTHROPIC_IDENTITY_TOKEN_FILE") or os.environ.get("ANTHROPIC_IDENTITY_TOKEN"):
@@ -71,21 +115,30 @@ def _has_credentials():
     return os.path.isdir(creds) and any(f.endswith(".json") for f in os.listdir(creds))
 
 
-def _get_client():
-    """Build the SDK client once. Returns None if unavailable — never raises."""
-    global _client
+def _get_client(name=None):
+    """Build the SDK client once per provider. None if unavailable — never raises."""
+    name = name or provider()
     with _client_lock:
-        if _client is None:
+        if name not in _clients:
+            client = False
             try:
-                import anthropic
-                _client = anthropic.Anthropic() if _has_credentials() else False
+                if not _has_credentials():
+                    raise RuntimeError("no credentials")
+                if name == "gemini":
+                    from google import genai
+                    key = os.environ.get("GEMINI_API_KEY") or os.environ["GOOGLE_API_KEY"]
+                    client = genai.Client(api_key=key)
+                else:
+                    import anthropic
+                    client = anthropic.Anthropic()
             except Exception:                      # noqa: BLE001 - absence is a valid state
-                _client = False
-    return _client or None
+                client = False
+            _clients[name] = client
+    return _clients[name] or None
 
 
-def available():
-    return _get_client() is not None
+def available(name=None):
+    return _get_client(name) is not None
 
 
 # ------------------------------------------------------------------ the cache
@@ -140,52 +193,91 @@ def build_prompt(story):
     return prompt
 
 
-def summarize_one(story, model=DEFAULT_MODEL, effort="low"):
-    """One story -> summary dict, or None on any failure."""
-    client = _get_client()
+def summarize_one(story, model=None, effort="low", name=None):
+    """One story -> summary dict, or {"error": ...} on failure. Never raises."""
+    name = name or provider()
+    model = model or default_model(name)
+    client = _get_client(name)
     if client is None:
-        return None
+        return {"error": "no credentials"}
+    _throttle(PROVIDER_RPM.get(name, 0))
     try:
-        response = client.messages.create(
-            model=model,
-            max_tokens=3000,          # room for adaptive thinking plus ~45 words
-            system=SYSTEM,
-            output_config={"effort": effort},
-            messages=[{"role": "user", "content": build_prompt(story)}],
-        )
+        if name == "gemini":
+            return _call_gemini(client, model, story)
+        return _call_anthropic(client, model, story, effort)
     except Exception as exc:                       # noqa: BLE001 - degrade, never break
         return {"error": f"{type(exc).__name__}: {exc}"}
 
+
+def _result(text, model, tin, tout):
+    return {"text": " ".join(text.split()), "model": model, "source": "claude",
+            "created": time.time(),
+            "usage": {"input": tin or 0, "output": tout or 0, "cache_read": 0}}
+
+
+def _call_anthropic(client, model, story, effort):
+    response = client.messages.create(
+        model=model,
+        max_tokens=3000,              # room for adaptive thinking plus ~45 words
+        system=SYSTEM,
+        output_config={"effort": effort},
+        messages=[{"role": "user", "content": build_prompt(story)}],
+    )
     if response.stop_reason == "refusal":
         return {"error": "refusal"}
     text = " ".join(b.text for b in response.content if b.type == "text").strip()
     if not text:
         return {"error": f"empty response (stop_reason={response.stop_reason})"}
+    out = _result(text, response.model, response.usage.input_tokens,
+                  response.usage.output_tokens)
+    out["usage"]["cache_read"] = getattr(response.usage, "cache_read_input_tokens", 0) or 0
+    return out
 
-    usage = response.usage
-    return {
-        "text": text,
-        "model": response.model,
-        "source": "claude",
-        "created": time.time(),
-        "usage": {
-            "input": usage.input_tokens,
-            "output": usage.output_tokens,
-            "cache_read": getattr(usage, "cache_read_input_tokens", 0) or 0,
-        },
+
+def _call_gemini(client, model, story):
+    from google.genai import types
+
+    config = {
+        "system_instruction": SYSTEM,
+        "max_output_tokens": 1200,    # Gemini counts thinking toward this budget
+        "temperature": 0.2,
     }
+    # Newer Gemini models think by default; a 45-word factual summary doesn't need
+    # it, and the budget competes with the answer for max_output_tokens.
+    try:
+        config["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    except Exception:                              # noqa: BLE001 - older SDKs lack it
+        pass
+
+    response = client.models.generate_content(
+        model=model,
+        contents=build_prompt(story),
+        config=types.GenerateContentConfig(**config),
+    )
+    text = (getattr(response, "text", None) or "").strip()
+    if not text:
+        reason = getattr(response, "prompt_feedback", None)
+        return {"error": f"empty response ({reason})"}
+    usage = getattr(response, "usage_metadata", None)
+    return _result(text, model,
+                   getattr(usage, "prompt_token_count", 0),
+                   getattr(usage, "candidates_token_count", 0))
 
 
 # ------------------------------------------------------------------ the driver
-def apply(stories, model=DEFAULT_MODEL, max_workers=8, limit=None, log=print):
+def apply(stories, model=None, max_workers=None, limit=None, log=print):
     """Upgrade each story's `consensus` to an LLM summary where possible.
 
     Cached stories cost nothing. Anything that fails keeps the extract it already
     had. Returns a stats dict; never raises.
     """
+    name = provider()
+    model = model or default_model(name)
+    if max_workers is None:
+        max_workers = PROVIDER_WORKERS.get(name, 4)
     stats = {"cached": 0, "written": 0, "failed": 0, "skipped": 0,
-             "input_tokens": 0, "output_tokens": 0, "model": model}
-    if not available():
+             "input_tokens": 0, "output_tokens": 0, "model": model, "provider": name}
+    if not available(name):
         stats["skipped"] = len(stories)
         return stats
 
@@ -209,7 +301,9 @@ def apply(stories, model=DEFAULT_MODEL, max_workers=8, limit=None, log=print):
     if not todo:
         return stats
 
-    log(f"  summarizing {len(todo)} new stories with {model}…")
+    rpm = PROVIDER_RPM.get(name, 0)
+    eta = f", ~{len(todo) * 60 // rpm // 60 or 1} min at {rpm}/min" if rpm else ""
+    log(f"  summarizing {len(todo)} new stories with {model}{eta}…")
 
     # If the API is refusing everything — bad key, hard rate limit, outage — stop
     # early rather than firing one doomed request per story.
@@ -220,7 +314,7 @@ def apply(stories, model=DEFAULT_MODEL, max_workers=8, limit=None, log=print):
     def work(story):
         if abort.is_set():
             return story, None
-        result = summarize_one(story, model=model)
+        result = summarize_one(story, model=model, name=name)
         with _cache_lock:
             if result and "error" in result:
                 consecutive[0] += 1
@@ -246,9 +340,10 @@ def apply(stories, model=DEFAULT_MODEL, max_workers=8, limit=None, log=print):
                                   "source": "claude", "model": result["model"]}
 
     if first_error[0]:
-        stats["error"] = first_error[0]
+        brief = " ".join(first_error[0].split())[:140]
+        stats["error"] = brief
         if log:
             log(f"  ! {stats['failed']} summaries fell back to the extract "
-                f"({'gave up early: ' if abort.is_set() else ''}{first_error[0]})")
+                f"({'gave up early — ' if abort.is_set() else ''}{brief})")
     save_cache(cache)
     return stats

@@ -1,8 +1,12 @@
 """Compare summary models on real stories before committing to one.
 
-    python3 bakeoff.py                       # 12 stories, Opus 5 vs Sonnet 5
+    python3 bakeoff.py                       # 12 stories, on whatever provider you have
     python3 bakeoff.py 30                    # 30 stories
+    python3 bakeoff.py 20 gemini-3.7-flash gemini-3.5-flash-lite
     python3 bakeoff.py 20 claude-opus-5 claude-haiku-4-5
+
+Models from different providers can be compared in the same run, as long as the
+matching key is set for each.
 
 Picks the hardest stories it can find — the ones with the most outlets and the
 widest spread across the spectrum, plus any blindspots — because that is where
@@ -19,14 +23,25 @@ import llm_summary
 import pipeline
 
 # $ per million tokens (input, output). Sonnet 5 shows introductory pricing,
-# which runs through 2026-08-31 and then becomes $3 / $15.
+# which runs through 2026-08-31 and then becomes $3 / $15. Gemini Flash models
+# are $0 on Google's free tier, which is what this project assumes.
 PRICING = {
     "claude-opus-5": (5.00, 25.00),
     "claude-fable-5": (10.00, 50.00),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-haiku-4-5": (1.00, 5.00),
+    "gemini-3.7-flash": (0.0, 0.0),
+    "gemini-3.6-flash": (0.0, 0.0),
+    "gemini-3.5-flash": (0.0, 0.0),
+    "gemini-3.5-flash-lite": (0.0, 0.0),
+    "gemini-2.5-flash": (0.0, 0.0),
+    "gemini-2.5-flash-lite": (0.0, 0.0),
 }
 NEW_STORIES_PER_DAY = 91          # measured from this feed list
+
+
+def provider_for(model):
+    return "gemini" if model.startswith("gemini") else "anthropic"
 
 
 def pick(stories, count):
@@ -42,11 +57,16 @@ def main():
     count = int(args[0]) if args and args[0].isdigit() else 12
     models = [a for a in args if not a.isdigit()] or ["claude-opus-5", "claude-sonnet-5"]
 
-    if not llm_summary.available():
-        raise SystemExit(
-            "No Anthropic credentials found.\n"
-            "  export ANTHROPIC_API_KEY=sk-ant-...   (or run: ant auth login)\n"
-            "then re-run this script.")
+    if not any(a for a in args if not a.isdigit()):
+        models = [llm_summary.default_model()]        # whatever you have a key for
+
+    missing = sorted({provider_for(m) for m in models}
+                     - {p for p in ("gemini", "anthropic") if llm_summary.available(p)})
+    if missing:
+        hint = {"gemini": "  export GEMINI_API_KEY=...        (free: aistudio.google.com/apikey)",
+                "anthropic": "  export ANTHROPIC_API_KEY=sk-ant-...   (or: ant auth login)"}
+        raise SystemExit("No credentials for: " + ", ".join(missing) + "\n"
+                         + "\n".join(hint[m] for m in missing))
 
     data = pipeline.load()
     if not data:
@@ -60,9 +80,12 @@ def main():
 
     def run(job):
         model, story = job
-        return model, story["id"], llm_summary.summarize_one(story, model=model)
+        return model, story["id"], llm_summary.summarize_one(
+            story, model=model, name=provider_for(model))
 
-    with futures.ThreadPoolExecutor(max_workers=8) as pool:
+    # Gemini's free tier is rate limited, so keep concurrency low when it's involved.
+    workers = 2 if any(provider_for(m) == "gemini" for m in models) else 8
+    with futures.ThreadPoolExecutor(max_workers=workers) as pool:
         for model, story_id, result in pool.map(run, jobs):
             results[(model, story_id)] = result
             if result and "usage" in result:
@@ -94,9 +117,14 @@ def main():
         pin, pout = PRICING.get(model, (0, 0))
         cost = tin / 1e6 * pin + tout / 1e6 * pout
         per_story = cost / max(len(chosen), 1)
-        print(f"{model:<20} {tin:>8} {tout:>8} {per_story:>10.5f} "
-              f"{per_story * NEW_STORIES_PER_DAY * 30:>10.2f}")
+        monthly = per_story * NEW_STORIES_PER_DAY * 30
+        free = model in PRICING and PRICING[model] == (0.0, 0.0)
+        print(f"{model:<22} {tin:>8} {tout:>8} "
+              f"{'free' if free else format(per_story, '.5f'):>10} "
+              f"{'free' if free else format(monthly, '.2f'):>10}")
     print("\nThinking tokens count as output, so these are real totals, not estimates.")
+    print(f"Gemini Flash is free up to Google's tier limits (~1,000 requests/day); this "
+          f"project needs ~{NEW_STORIES_PER_DAY}/day.")
 
 
 if __name__ == "__main__":
