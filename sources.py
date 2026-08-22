@@ -1,4 +1,4 @@
-"""Source registry: the feeds Groundish pulls, plus the metadata that makes
+"""Source registry: the feeds Groundish News pulls, plus the metadata that makes
 the aggregation meaningful (political lean, factuality, owner, country).
 
 BIAS SCALE

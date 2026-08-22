@@ -1,4 +1,4 @@
-"""Groundish web server. Stdlib http.server -- no framework, no install step.
+"""Groundish News web server. Stdlib http.server -- no framework, no install step.
 
     python3 server.py            # serve on :8000, refreshing if data is stale
     python3 server.py 9000       # pick a port
@@ -107,7 +107,7 @@ def filter_stories(stories, q):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Groundish"
+    server_version = "Groundish News"
 
     def log_message(self, fmt, *args):
         pass                                             # quiet; we log our own
@@ -221,7 +221,7 @@ def main():
         _log("no cache yet — first request will trigger a fetch")
 
     httpd = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    _log(f"Groundish serving at http://127.0.0.1:{port}")
+    _log(f"Groundish News serving at http://127.0.0.1:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

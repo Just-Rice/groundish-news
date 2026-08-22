@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 import cluster as clustering
 import sources
+import summarize
 
 FACTUALITY_SCORE = {"high": 1.0, "mostly-high": 0.75, "mixed": 0.45, "low": 0.1}
 
@@ -103,10 +104,13 @@ def build_story(articles, indices, pools, now_ts):
     age_hours = ((now_ts - last_ts) / 3600.0) if last_ts else 48.0
     rank = total * (0.5 ** (max(age_hours, 0) / 36.0))
 
+    consensus = summarize.summarize(members)
+
     return {
         "id": "s" + members[0]["id"][:12],
         "title": lead["title"],
         "title_source": lead["source"],
+        "consensus": consensus,
         "summary": next((a["summary"] for a in outlets if a.get("summary")), ""),
         "article_count": len(members),
         "outlet_count": total,

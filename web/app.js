@@ -1,4 +1,4 @@
-/* Groundish front end. No framework, no build step. */
+/* Groundish News front end. No framework, no build step. */
 "use strict";
 
 const BUCKETS = [
@@ -105,6 +105,9 @@ function storyCard(story) {
   }
   card.appendChild(meta);
 
+  const tldr = consensusBlock(story.consensus, false);
+  if (tldr) card.appendChild(tldr);
+
   card.appendChild(biasBar(story.bar, story.outlet_count));
   card.appendChild(biasLegend(story.bar, story.outlet_count));
 
@@ -143,6 +146,23 @@ function storyCard(story) {
   return card;
 }
 
+/* The summary is stitched together from sentences the outlets themselves wrote,
+   picked for cross-spectrum agreement — so the label says exactly that. */
+function consensusBlock(consensus, open) {
+  if (!consensus || !consensus.text) return null;
+  const box = el("details", "tldr");
+  if (open) box.open = true;
+  box.appendChild(el("summary", null, "Summary"));
+  const body = el("div", "body");
+  body.appendChild(document.createTextNode(consensus.text));
+  const via = el("span", "via",
+    "Sentences reported in common by " + consensus.outlets.join(" and ") +
+    " — chosen because the facts in them recur across the spectrum, not written by Groundish News.");
+  body.appendChild(via);
+  box.appendChild(body);
+  return box;
+}
+
 function articleLink(item, leanSlug) {
   const link = el("a");
   link.href = item.url || "#";
@@ -176,6 +196,8 @@ async function openStory(id) {
     `${story.outlet_count} outlets · ${story.article_count} articles · ` +
     `${story.countries.join(", ")} · headline shown from ${story.title_source}`);
   body.appendChild(meta);
+  const modalTldr = consensusBlock(story.consensus, true);
+  if (modalTldr) body.appendChild(modalTldr);
   body.appendChild(biasBar(story.bar, story.outlet_count));
   body.appendChild(biasLegend(story.bar, story.outlet_count));
 
@@ -311,7 +333,7 @@ async function renderStories(onlyBlindspots) {
     const note = el("div", "prose");
     note.appendChild(el("p", null,
       "A blindspot is a story one side of the spectrum is largely not covering. " +
-      "Groundish compares how many of the left-leaning outlets it polled ran the story " +
+      "Groundish News compares how many of the left-leaning outlets it polled ran the story " +
       "against how many right-leaning ones did — rates, not raw counts, because this " +
       "source list carries more left-of-centre outlets than right-of-centre ones."));
     view.appendChild(note);
@@ -417,7 +439,7 @@ async function renderBias() {
     const box = el("div", "prose");
     box.appendChild(el("h3", null, "My Bias"));
     box.appendChild(el("p", null,
-      "Nothing tracked yet. Every time you open an article from Groundish, the lean of " +
+      "Nothing tracked yet. Every time you open an article from Groundish News, the lean of " +
       "the outlet you clicked is tallied here — locally, in this browser only. Read a few " +
       "stories and come back to see the shape of your own diet."));
     view.appendChild(box);
@@ -435,7 +457,7 @@ async function renderBias() {
   if (state.meta) {
     box.appendChild(el("h3", null, "What was on offer"));
     box.appendChild(el("p", null,
-      "For comparison, this is the lean distribution of every article Groundish pulled " +
+      "For comparison, this is the lean distribution of every article Groundish News pulled " +
       "in the current batch. A gap between the two bars is the interesting part."));
     const total = Object.values(state.meta.bar).reduce((a, b) => a + b, 0);
     box.appendChild(biasBar(state.meta.bar, total));
@@ -478,7 +500,7 @@ function renderAbout() {
   view.innerHTML = `
 <div class="prose">
   <h3>What this does</h3>
-  <p>Groundish pulls <strong>public RSS feeds from ${state.meta ? state.meta.source_count : "60+"} news outlets</strong>
+  <p>Groundish News pulls <strong>public RSS feeds from ${state.meta ? state.meta.source_count : "60+"} news outlets</strong>
      spanning the political spectrum, groups the articles that describe the same event into a single
      story, and shows you who covered it, how they headlined it, and who is missing.</p>
 
@@ -489,9 +511,19 @@ function renderAbout() {
      two groups only join if their centroids are still similar, which prevents the chaining failure
      where A resembles B and B resembles C, so three unrelated stories collapse into one.</p>
 
+  <h3>Where the summaries come from</h3>
+  <p>There is no language model here and no API key, so each summary is <strong>extractive</strong>:
+     it reuses sentences the outlets themselves published. The selection is what makes it
+     non-partisan. A sentence scores well when the facts in it are repeated independently by many
+     outlets, and especially when those outlets sit on <em>different sides</em> of the spectrum —
+     a detail Fox News, the Associated Press and Mother Jones all bothered to print is very likely
+     the uncontested part of the story. Sentences carrying opinion markers, second-person address
+     or rhetorical questions are pushed down; centre outlets break ties. It is a consensus extract,
+     not neutral prose written from scratch, and the app says so under every summary.</p>
+
   <h3>How blindspots are decided</h3>
   <p>A blindspot is a story that one side of the spectrum is largely not running. Rather than compare
-     raw shares of coverage, Groundish compares <strong>coverage rates</strong>: of the right-leaning
+     raw shares of coverage, Groundish News compares <strong>coverage rates</strong>: of the right-leaning
      outlets polled, what fraction carried this story, versus the left-leaning ones? Any hand-built
      source list is lopsided — this one has more left-of-centre outlets than right-of-centre — and a
      raw share would flag a blindspot on the right for nearly everything. A story qualifies when it

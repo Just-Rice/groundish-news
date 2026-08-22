@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start Groundish and open it in a browser.
+# Start Groundish News and open it in a browser.
 set -euo pipefail
 cd "$(dirname "$0")"
 PORT="${1:-8000}"

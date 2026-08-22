@@ -1,4 +1,4 @@
-# Groundish
+# Groundish News
 
 A news aggregator in the spirit of [Ground News](https://ground.news): it pulls the
 same story from across the political spectrum, shows you who covered it, how each
@@ -80,7 +80,7 @@ resembles B and B resembles C, so three unrelated stories collapse into one.
 
 A blindspot is a story one side of the spectrum is largely not running.
 
-Groundish compares **coverage rates**, not raw shares. Any hand-built source list
+Groundish News compares **coverage rates**, not raw shares. Any hand-built source list
 is lopsided — this one carries more left-of-centre outlets than right-of-centre —
 so a raw share of coverage would flag a blindspot on the right for nearly every
 story. Instead: of the right-leaning outlets polled, what fraction ran this story,
