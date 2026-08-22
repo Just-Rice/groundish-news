@@ -1,0 +1,70 @@
+# Rebuilds the story data and publishes the site to GitHub Pages.
+#
+# Pages serves files, not programs, so the pipeline runs here instead: this job
+# pulls the feeds, clusters them, writes docs/, and deploys that as a Pages
+# artifact. Nothing is committed back to the repository — a 1 MB bundle landing
+# in git every half hour would bloat the history for no benefit.
+name: Build and deploy site
+
+on:
+  schedule:
+    # Every 30 minutes. GitHub runs scheduled jobs on a best-effort basis and
+    # disables them entirely after 60 days without repository activity.
+    - cron: "*/30 * * * *"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it half-way.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      # Optional. Without it the build uses the dependency-free extractive
+      # summariser, which is the normal path.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      GROUNDISH_MODEL: ${{ vars.GROUNDISH_MODEL }}
+      GROUNDISH_LLM: ${{ vars.GROUNDISH_LLM }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The project itself needs nothing installed; these are only for the
+      # optional LLM summaries, and only when a key is actually configured.
+      - name: Install optional LLM SDK (Gemini)
+        if: env.GEMINI_API_KEY != ''
+        run: pip install --quiet google-genai
+
+      - name: Install optional LLM SDK (Anthropic)
+        if: env.ANTHROPIC_API_KEY != ''
+        run: pip install --quiet anthropic
+
+      - name: Fetch feeds and build the site
+        run: python3 build_static.py 0
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
