@@ -6,6 +6,7 @@ import time
 
 import analyze
 import feeds
+import llm_summary
 import sources
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
@@ -21,7 +22,16 @@ def run(max_age=0, min_outlets=2, log=print):
 
     log("clustering…")
     stories, pools = analyze.analyze(articles, min_outlets=min_outlets)
+
+    # Optional upgrade: an LLM writes the summary where credentials allow it.
+    # Cached stories cost nothing and failures keep the extract, so this is safe
+    # to call unconditionally.
+    summary_stats = llm_summary.apply(stories, log=log)
+    for story in stories:
+        story.pop("_summary_key", None)
+
     meta = analyze.overview(articles, stories, pools, report)
+    meta["summaries"] = summary_stats
     meta["seconds"] = round(time.time() - started, 1)
 
     payload = {"meta": meta, "stories": stories,
@@ -36,6 +46,10 @@ def run(max_age=0, min_outlets=2, log=print):
         f"({meta['sources_ok']}/{meta['source_count']} feeds) in {meta['seconds']}s")
     log(f"blindspots: {meta['blindspots']['right']} on the right, "
         f"{meta['blindspots']['left']} on the left")
+    if summary_stats["written"] or summary_stats["cached"]:
+        log(f"summaries: {summary_stats['written']} written, "
+            f"{summary_stats['cached']} from cache, {summary_stats['failed']} failed "
+            f"({summary_stats['input_tokens']}+{summary_stats['output_tokens']} tokens)")
     return payload
 
 

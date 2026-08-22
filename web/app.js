@@ -155,9 +155,11 @@ function consensusBlock(consensus, open) {
   box.appendChild(el("summary", null, "Summary"));
   const body = el("div", "body");
   body.appendChild(document.createTextNode(consensus.text));
-  const via = el("span", "via",
-    "Sentences reported in common by " + consensus.outlets.join(" and ") +
-    " — chosen because the facts in them recur across the spectrum, not written by Groundish News.");
+  const via = el("span", "via", consensus.source === "claude"
+    ? `Written by ${consensus.model || "Claude"} from the headlines below, using only what ` +
+      "outlets across the spectrum report in common — not any single outlet's wording."
+    : "Sentences reported in common by " + consensus.outlets.join(" and ") +
+      " — chosen because the facts in them recur across the spectrum, not written by Groundish News.");
   body.appendChild(via);
   box.appendChild(body);
   return box;

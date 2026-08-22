@@ -36,6 +36,8 @@ sources.py    the one table you edit: 66 outlets, their feeds, lean, factuality,
 feeds.py      RSS/Atom/RDF fetching and parsing, threaded, with an on-disk cache
 cluster.py    TF-IDF vectors, inverted-index blocking, average-link clustering
 summarize.py  consensus summaries: extractive, scored on cross-spectrum agreement
+llm_summary.py optional Claude-written summaries, cached on disk (needs a key)
+bakeoff.py    compare summary models on real stories before picking one
 analyze.py    bias distribution, blindspot detection, ownership concentration
 pipeline.py   fetch → cluster → analyze → data/stories.json
 server.py     stdlib HTTP server and JSON API
@@ -94,6 +96,54 @@ and a Jaccard check stops the second sentence from restating the first. In testi
 
 It is a consensus extract, **not** neutral prose written from scratch, and the app
 says so under every summary.
+
+## Optional: Claude-written summaries
+
+The extractive summary is the default and needs nothing. If you want summaries
+written from scratch rather than stitched from outlet sentences, set a key:
+
+```bash
+pip install anthropic
+export ANTHROPIC_API_KEY=sk-ant-...      # or: ant auth login
+python3 pipeline.py
+```
+
+That is the only non-stdlib dependency in the project and it is entirely optional.
+With no key, no SDK, an API error, a rate limit, or a refusal, stories keep their
+extract — every failure path falls back rather than breaking a refresh, and a run
+of failures trips a circuit breaker so a bad key costs one request, not one per story.
+
+**Why it is affordable.** Summaries are cached on disk and keyed to a story's
+*identity* — the earliest few articles in its cluster, which stay put as coverage
+grows. Feeds are re-pulled every 15 minutes, but only about **90 genuinely new
+stories appear per day**, so a refresh makes a handful of calls, not a few hundred.
+Re-summarizing all 212 stories on every refresh would cost ~$440/month on the
+cheapest model and produce identical text; the cache brings that to a few dollars.
+
+| Model | Price (in/out per Mtok) | ~Cost/month |
+| --- | --- | --- |
+| `claude-opus-5` (default) | $5 / $25 | ~$15 |
+| `claude-sonnet-5` | $2 / $10 intro through 2026-08-31, then $3 / $15 | ~$6, then ~$9 |
+| `claude-haiku-4-5` | $1 / $5 | ~$3 |
+
+Pick one with `GROUNDISH_MODEL=claude-sonnet-5 python3 pipeline.py`, or compare
+them on your own stories first:
+
+```bash
+python3 bakeoff.py 20 claude-opus-5 claude-sonnet-5
+```
+
+`bakeoff.py` picks the hardest stories it can find — most outlets, widest spread
+across the spectrum, blindspots first — runs each model on all of them, prints the
+summaries side by side next to the extractive one, and reports real token counts
+and the monthly cost each model implies. Easy stories all read alike; the
+differences show up where outlets disagree.
+
+**What the prompt asks for.** Only facts that outlets on different sides report in
+common; the plainest available wording; attribution where sources conflict; and an
+explicit instruction that the number of outlets on a side reflects which feeds this
+app polls, not what is true — the source list leans left 31 to 17, so a summary that
+simply follows the majority would quietly defeat the point of the app.
 
 ## How blindspots work
 
