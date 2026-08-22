@@ -1,5 +1,7 @@
 # Groundish News
 
+**Live: https://just-rice.github.io/groundish-news/**
+
 A news aggregator in the spirit of [Ground News](https://ground.news): it pulls the
 same story from across the political spectrum, shows you who covered it, how each
 side headlined it, who owns the outlets doing the covering — and which side isn't
@@ -29,12 +31,40 @@ from the **Refresh feeds** button.
 | **Factuality** | An aggregate factuality reading for the outlets covering a story |
 | **My Bias** | A local-only tally of the lean of every article you click through to |
 
+## Hosting it on GitHub Pages
+
+Pages serves files, not programs, so `server.py` cannot run there — and a browser
+cannot fetch the RSS feeds itself, because news sites send no CORS headers. The
+work is done ahead of time instead:
+
+```bash
+python3 build_static.py        # writes docs/ — the site plus a data bundle
+```
+
+`docs/` holds the same `index.html`, `styles.css` and `app.js` as `web/`, next to
+`data/bundle.json` (~1.1 MB: 207 stories, 66 sources). `app.js` probes for the
+live API on load and falls back to that bundle, so one front end serves both
+modes — its static filtering and sorting mirror `filter_stories()` and `_slim()`
+in `server.py` so both return the same stories in the same order. Every request
+path is relative, since Pages serves from a `/<repo-name>/` sub-path.
+
+**Keeping it fresh.** Committed data is a snapshot. `.github/workflows/pages.yml`
+rebuilds it every 30 minutes and deploys via Pages artifacts, so nothing is
+committed back to the repository — a 1 MB bundle landing in git every half hour
+would bloat history for nothing. Adding that workflow needs a token with the
+`workflow` scope, or you can paste the file straight into GitHub's web UI. Once
+it is in place, set **Settings → Pages → Source** to **GitHub Actions**.
+
+Note that GitHub disables scheduled workflows after 60 days without repository
+activity, and runs them on a best-effort basis rather than exactly on the minute.
+
 ## Layout
 
 ```
 sources.py    the one table you edit: 66 outlets, their feeds, lean, factuality, owner
 feeds.py      RSS/Atom/RDF fetching and parsing, threaded, with an on-disk cache
 cluster.py    TF-IDF vectors, inverted-index blocking, average-link clustering
+build_static.py builds docs/ for GitHub Pages: site files plus a data bundle
 summarize.py  consensus summaries: extractive, scored on cross-spectrum agreement
 llm_summary.py optional Claude-written summaries, cached on disk (needs a key)
 bakeoff.py    compare summary models on real stories before picking one
