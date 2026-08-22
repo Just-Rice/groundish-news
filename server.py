@@ -13,6 +13,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import llm_summary
 import pipeline
 import sources
 
@@ -127,10 +128,35 @@ class Handler(BaseHTTPRequestHandler):
 
     # ------------------------------------------------------------------ routes
     def do_POST(self):
-        if urllib.parse.urlparse(self.path).path == "/api/refresh":
+        path = urllib.parse.urlparse(self.path).path
+        if path == "/api/refresh":
             threading.Thread(target=refresh, daemon=True).start()
             return self._send(202, {"status": "refreshing"})
+        if path == "/api/summarize":
+            return self.summarize()
         self._send(404, {"error": "not found"})
+
+    def summarize(self):
+        """Write one story's summary on demand. The key never leaves the server."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            wanted = json.loads(self.rfile.read(length) or b"{}").get("id")
+        except (ValueError, TypeError):
+            return self._send(400, {"error": "expected JSON with an id"})
+
+        data = ensure_data()
+        story = next((s for s in (data or {}).get("stories", []) if s["id"] == wanted), None)
+        if story is None:
+            return self._send(404, {"error": "no such story"})
+        if not llm_summary.available():
+            return self._send(503, {"error": "no API credentials configured on the server"})
+
+        result = llm_summary.summarize_one(story)
+        if "error" in result:
+            # Caller keeps whatever summary it already had — see the fallback in app.js.
+            return self._send(502, {"error": result["error"][:200]})
+        return self._send(200, {"text": result["text"], "model": result["model"],
+                                "source": "claude"})
 
     def do_HEAD(self):
         self.do_GET()

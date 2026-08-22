@@ -202,7 +202,7 @@ function storyCard(story) {
   }
   card.appendChild(meta);
 
-  const tldr = consensusBlock(story.consensus, false);
+  const tldr = consensusBlock(story.consensus, false, story);
   if (tldr) card.appendChild(tldr);
 
   card.appendChild(biasBar(story.bar, story.outlet_count));
@@ -243,22 +243,181 @@ function storyCard(story) {
   return card;
 }
 
+
+/* --------------------------------------------------- on-demand LLM summaries
+   Summaries are written when someone asks for one, not for all 200 stories up
+   front — Gemini's free tier allows only ~20 requests per model per day.
+
+   The key is never in this repository. On a static host the visitor supplies
+   their own and it lives in their browser's localStorage; when server.py is
+   serving, the key stays server-side and the browser just asks /api/summarize.
+   Either way, if every model's quota is spent the story keeps the summary that
+   summarize.py already produced, with a note saying why. */
+const KEY_STORE = "groundish.gemini_key";
+const SUMMARY_STORE = "groundish.summaries.v1";
+const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/";
+
+const Keys = {
+  get() { try { return localStorage.getItem(KEY_STORE) || ""; } catch (_) { return ""; } },
+  set(value) {
+    try {
+      if (value) localStorage.setItem(KEY_STORE, value);
+      else localStorage.removeItem(KEY_STORE);
+    } catch (_) { /* private browsing */ }
+  },
+};
+
+const Written = {
+  all() {
+    try { return JSON.parse(localStorage.getItem(SUMMARY_STORE)) || {}; }
+    catch (_) { return {}; }
+  },
+  get(id) { return this.all()[id] || null; },
+  set(id, entry) {
+    const all = this.all();
+    all[id] = entry;
+    try { localStorage.setItem(SUMMARY_STORE, JSON.stringify(all)); } catch (_) {}
+  },
+};
+
+/* Can this page write a summary at all? */
+function canGenerate() {
+  return Data.mode === "server" || Boolean(Keys.get());
+}
+
+/* Mirrors build_prompt() in llm_summary.py. */
+function buildPrompt(story) {
+  const seen = new Set();
+  const lines = [];
+  for (const article of story.articles || []) {
+    if (seen.has(article.source_id)) continue;
+    seen.add(article.source_id);
+    lines.push(`[${article.lean_label}] ${article.source}: ${article.title}`);
+    if (lines.length >= 26) break;
+  }
+  return "Headlines for one story:\n\n" + lines.join("\n");
+}
+
+async function callGemini(model, prompt, system, key) {
+  const res = await fetch(GEMINI_ENDPOINT + encodeURIComponent(model) + ":generateContent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 8000 },
+    }),
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const message = (payload.error && payload.error.message) || `HTTP ${res.status}`;
+    const err = new Error(message);
+    err.quota = res.status === 429 || /quota|exhausted/i.test(message);
+    throw err;
+  }
+  const text = (((payload.candidates || [])[0] || {}).content?.parts || [])
+    .map((part) => part.text || "").join(" ").trim();
+  if (!text) throw new Error("empty response");
+  return text;
+}
+
+/* -> {text, model} or throws. Walks the model chain so a spent daily quota on
+   one model moves to the next instead of failing outright. */
+async function writeSummary(storyId) {
+  const story = await Data.story(storyId);
+  if (!story) throw new Error("story not found");
+
+  if (Data.mode === "server") {
+    const res = await fetch("api/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: storyId }),
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+    return { text: payload.text, model: payload.model };
+  }
+
+  const key = Keys.get();
+  if (!key) throw new Error("no Gemini key set");
+  const system = Data.bundle.prompt;
+  const models = Data.bundle.models || ["gemini-3.6-flash"];
+  const prompt = buildPrompt(story);
+
+  let last = null;
+  for (const model of models) {
+    try {
+      return { text: await callGemini(model, prompt, system, key), model };
+    } catch (err) {
+      last = err;
+      if (!err.quota) break;      // a real error: stop walking the chain
+    }
+  }
+  throw last || new Error("all models unavailable");
+}
+
 /* The summary is stitched together from sentences the outlets themselves wrote,
    picked for cross-spectrum agreement — so the label says exactly that. */
-function consensusBlock(consensus, open) {
-  if (!consensus || !consensus.text) return null;
+function consensusBlock(consensus, open, story) {
+  const written = story ? Written.get(story.id) : null;
+  const current = written || consensus;
+  if (!current || !current.text) return null;
+
   const box = el("details", "tldr");
   if (open) box.open = true;
-  box.appendChild(el("summary", null, "Summary"));
+
+  const head = el("summary", null, "Summary");
+  box.appendChild(head);
   const body = el("div", "body");
-  body.appendChild(document.createTextNode(consensus.text));
-  const via = el("span", "via", consensus.source === "claude"
-    ? `Written by ${consensus.model || "Claude"} from the headlines below, using only what ` +
-      "outlets across the spectrum report in common — not any single outlet's wording."
-    : "Sentences reported in common by " + consensus.outlets.join(" and ") +
-      " — chosen because the facts in them recur across the spectrum, not written by Groundish News.");
-  body.appendChild(via);
   box.appendChild(body);
+
+  const paint = (entry, note) => {
+    body.textContent = "";
+    body.appendChild(document.createTextNode(entry.text));
+    const via = el("span", "via");
+    if (entry.source === "claude" || entry.model) {
+      via.textContent = `Written by ${entry.model || "an LLM"} from the headlines below, ` +
+        "using only what outlets across the spectrum report in common — not any " +
+        "single outlet's wording.";
+    } else {
+      via.textContent = "Sentences reported in common by " +
+        (entry.outlets || []).join(" and ") +
+        " — chosen because the facts in them recur across the spectrum.";
+    }
+    body.appendChild(via);
+    if (note) {
+      const warn = el("span", "via note", note);
+      body.appendChild(warn);
+    }
+  };
+  paint(current);
+
+  // Offer to (re)write it only where that is actually possible.
+  if (story && canGenerate() && !(written && written.text)) {
+    const button = el("button", "gen", "Write with Gemini");
+    button.addEventListener("click", async (event) => {
+      event.preventDefault();
+      box.open = true;
+      button.disabled = true;
+      button.textContent = "Writing";
+      button.classList.add("dots");
+      try {
+        const entry = await writeSummary(story.id);
+        Written.set(story.id, entry);
+        button.remove();
+        paint(entry);
+      } catch (err) {
+        // The whole point of keeping the extractive summariser: this degrades
+        // to it rather than leaving the reader with nothing.
+        button.disabled = false;
+        button.classList.remove("dots");
+        button.textContent = "Retry";
+        paint(current, "Gemini unavailable (" + err.message.slice(0, 90) +
+                       ") — showing the consensus extract instead.");
+      }
+    });
+    head.appendChild(button);
+  }
   return box;
 }
 
@@ -294,7 +453,7 @@ async function openStory(id) {
     `${story.outlet_count} outlets · ${story.article_count} articles · ` +
     `${story.countries.join(", ")} · headline shown from ${story.title_source}`);
   body.appendChild(meta);
-  const modalTldr = consensusBlock(story.consensus, true);
+  const modalTldr = consensusBlock(story.consensus, true, story);
   if (modalTldr) body.appendChild(modalTldr);
   body.appendChild(biasBar(story.bar, story.outlet_count));
   body.appendChild(biasLegend(story.bar, story.outlet_count));
@@ -654,6 +813,43 @@ function renderAbout() {
 </div>`;
 }
 
+function setupKeyPanel() {
+  const panel = $("#keypanel");
+  const input = $("#keyinput");
+  const state_ = $("#keystate");
+  const paint = () => {
+    const key = Keys.get();
+    state_.textContent = key ? "Key saved in this browser" : "No key set";
+    $("#keybtn").textContent = key ? "Gemini key ✓" : "Gemini key";
+  };
+  paint();
+
+  $("#keybtn").addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      input.value = Keys.get();
+      input.focus();
+    }
+  });
+  $("#keysave").addEventListener("click", () => {
+    Keys.set(input.value.trim());
+    paint();
+    panel.hidden = true;
+    show(state.view);                 // re-render so the buttons appear
+  });
+  $("#keyclear").addEventListener("click", () => {
+    Keys.set("");
+    input.value = "";
+    paint();
+    show(state.view);
+  });
+  document.addEventListener("click", (event) => {
+    if (!panel.hidden && !panel.contains(event.target) && event.target !== $("#keybtn")) {
+      panel.hidden = true;
+    }
+  });
+}
+
 /* ------------------------------------------------------------- app chrome */
 function updateChrome() {
   const meta = state.meta;
@@ -725,9 +921,12 @@ async function init() {
     return;
   }
   if (Data.mode === "static") {
-    // Nothing to refresh on a static host — the data is rebuilt by CI.
-    $("#refresh").hidden = true;
+    // No server to poke, but the CI build may have deployed newer data since
+    // this page loaded — so the button re-fetches the bundle instead.
+    $("#refresh").textContent = "Reload data";
+    $("#keybtn").hidden = false;
   }
+  setupKeyPanel();
 
   $("#tabs").addEventListener("click", (event) => {
     const tab = event.target.closest(".tab");
@@ -738,6 +937,21 @@ async function init() {
   });
   window.addEventListener("hashchange", route);
   $("#refresh").addEventListener("click", async () => {
+    if (Data.mode === "static") {
+      const button = $("#refresh");
+      button.disabled = true;
+      button.textContent = "Reloading";
+      try {
+        const res = await fetch("data/bundle.json?t=" + Date.now(), { cache: "no-store" });
+        Data.bundle = await res.json();
+        state.meta = Data.bundle.meta;
+        updateChrome();
+        show(state.view);
+      } catch (_) { /* keep whatever is on screen */ }
+      button.disabled = false;
+      button.textContent = "Reload data";
+      return;
+    }
     await fetch("api/refresh", { method: "POST" });
     pollRefresh();
   });

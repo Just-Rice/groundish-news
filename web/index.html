@@ -20,6 +20,7 @@
     </div>
     <div class="topbar-actions">
       <span id="freshness" class="freshness" title="When the feeds were last pulled"></span>
+      <button id="keybtn" class="btn ghost" hidden>Gemini key</button>
       <button id="refresh" class="btn">Refresh feeds</button>
     </div>
   </div>
@@ -31,6 +32,20 @@
     <button class="tab" data-view="about">Method</button>
   </nav>
 </header>
+
+<div class="keypanel" id="keypanel" hidden>
+  <p>Paste a Google AI Studio key to write summaries on demand. It is stored only in
+     this browser — never sent anywhere except Google, and never in the repository.
+     Free keys: <a href="https://aistudio.google.com/apikey" target="_blank"
+     rel="noopener noreferrer">aistudio.google.com/apikey</a></p>
+  <input id="keyinput" type="password" placeholder="AI Studio API key" autocomplete="off"
+         spellcheck="false">
+  <div class="row">
+    <button id="keysave" class="btn">Save</button>
+    <button id="keyclear" class="btn ghost">Clear</button>
+    <span id="keystate" class="freshness"></span>
+  </div>
+</div>
 
 <main class="wrap" id="main">
 

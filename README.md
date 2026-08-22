@@ -196,6 +196,30 @@ explicit instruction that the number of outlets on a side reflects which feeds t
 app polls, not what is true — the source list leans left 31 to 17, so a summary that
 simply follows the majority would quietly defeat the point of the app.
 
+## Writing a summary on demand
+
+Pre-generating summaries for every story does not fit Google's free tier, which
+allows roughly 20 requests per model per day. So the button writes one when you
+ask for it: open a story's **Summary** and press **Write with Gemini**.
+
+Where the key lives depends on how the site is being served:
+
+- **`python3 server.py`** — the key stays server-side in `GEMINI_API_KEY`, and the
+  browser just calls `POST /api/summarize`. Nothing is exposed.
+- **GitHub Pages** — there is no server to hold a secret, and a key baked into the
+  page would be readable by every visitor and drained by the first bot to find it.
+  Instead each visitor supplies their own via the **Gemini key** button; it is kept
+  in that browser's `localStorage` and sent only to Google.
+
+A request walks the model chain, so a model whose daily quota is spent hands off
+to the next one. **If every model is exhausted, the story keeps the summary that
+`summarize.py` already wrote**, with a note explaining why — the extractive
+summariser is the floor the whole feature rests on, which is why it stays.
+Generated summaries are cached per browser, so re-opening a story costs nothing.
+
+The prompt and the model order are shipped inside `data/bundle.json` rather than
+copied into `app.js`, so the browser and the Python path cannot drift apart.
+
 ## How blindspots work
 
 A blindspot is a story one side of the spectrum is largely not running.

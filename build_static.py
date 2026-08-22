@@ -17,6 +17,7 @@ import shutil
 import sys
 import time
 
+import llm_summary
 import pipeline
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -40,8 +41,16 @@ def build(payload):
         "error": counts.get(s["id"], {}).get("error"),
     }) for s in payload["sources"]]
 
-    return {"meta": payload["meta"], "stories": stories, "sources": sources,
-            "static": True, "built": time.time()}
+    return {
+        "meta": payload["meta"], "stories": stories, "sources": sources,
+        "static": True, "built": time.time(),
+        # Shipped so on-demand summaries written in the browser use exactly the
+        # same instructions and model order as the Python path — one source of
+        # truth rather than a copy in app.js that drifts.
+        "prompt": llm_summary.SYSTEM,
+        "models": llm_summary.model_chain(llm_summary.DEFAULT_MODELS["gemini"])
+                  or llm_summary.DEFAULT_MODELS["gemini"].split(","),
+    }
 
 
 def main():
