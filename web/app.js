@@ -361,7 +361,13 @@ async function writeSummary(storyId) {
 function consensusBlock(consensus, open, story) {
   const written = story ? Written.get(story.id) : null;
   const current = written || consensus;
-  if (!current || !current.text) return null;
+  const hasText = Boolean(current && current.text);
+  // Roughly one story in eight has no extract: summarize.py works from the RSS
+  // description field, and some feeds ship none. Those are exactly the stories
+  // an LLM is most useful for, so the block still renders — with the button and
+  // an explanation — rather than disappearing and taking the button with it.
+  const canWrite = Boolean(story && canGenerate() && !(written && written.text));
+  if (!hasText && !canWrite) return null;
 
   const box = el("details", "tldr");
   if (open) box.open = true;
@@ -373,28 +379,32 @@ function consensusBlock(consensus, open, story) {
 
   const paint = (entry, note) => {
     body.textContent = "";
-    body.appendChild(document.createTextNode(entry.text));
-    const via = el("span", "via");
-    if (entry.source === "claude" || entry.model) {
-      via.textContent = `Written by ${entry.model || "an LLM"} from the headlines below, ` +
-        "using only what outlets across the spectrum report in common — not any " +
-        "single outlet's wording.";
+    if (entry && entry.text) {
+      body.appendChild(document.createTextNode(entry.text));
+      const via = el("span", "via");
+      if (entry.source === "claude" || entry.model) {
+        via.textContent = `Written by ${entry.model || "an LLM"} from the headlines below, ` +
+          "using only what outlets across the spectrum report in common — not any " +
+          "single outlet's wording.";
+      } else {
+        via.textContent = "Sentences reported in common by " +
+          (entry.outlets || []).join(" and ") +
+          " — chosen because the facts in them recur across the spectrum.";
+      }
+      body.appendChild(via);
     } else {
-      via.textContent = "Sentences reported in common by " +
-        (entry.outlets || []).join(" and ") +
-        " — chosen because the facts in them recur across the spectrum.";
+      const empty = el("span", "via",
+        "No summary yet — the feeds carrying this story publish headlines without " +
+        "the description text the extractive summariser needs. Use the button above " +
+        "to have one written from the headlines instead.");
+      body.appendChild(empty);
     }
-    body.appendChild(via);
-    if (note) {
-      const warn = el("span", "via note", note);
-      body.appendChild(warn);
-    }
+    if (note) body.appendChild(el("span", "via note", note));
   };
   paint(current);
 
-  // Offer to (re)write it only where that is actually possible.
-  if (story && canGenerate() && !(written && written.text)) {
-    const button = el("button", "gen", "Write with Gemini");
+  if (canWrite) {
+    const button = el("button", "gen", hasText ? "Write with Gemini" : "Write a summary");
     button.addEventListener("click", async (event) => {
       event.preventDefault();
       box.open = true;
@@ -407,13 +417,13 @@ function consensusBlock(consensus, open, story) {
         button.remove();
         paint(entry);
       } catch (err) {
-        // The whole point of keeping the extractive summariser: this degrades
-        // to it rather than leaving the reader with nothing.
+        // Degrade to whatever we already had — the extract where one exists, the
+        // explanation where it doesn't — rather than leaving the reader nothing.
         button.disabled = false;
         button.classList.remove("dots");
         button.textContent = "Retry";
-        paint(current, "Gemini unavailable (" + err.message.slice(0, 90) +
-                       ") — showing the consensus extract instead.");
+        paint(current, "Gemini unavailable (" + err.message.slice(0, 90) + ")" +
+                       (hasText ? " — showing the consensus extract instead." : "."));
       }
     });
     head.appendChild(button);
