@@ -6,11 +6,56 @@ import time
 
 import analyze
 import feeds
+import gdelt
 import llm_summary
 import sources
 
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA = os.path.join(ROOT, "data")
 OUT = os.path.join(DATA, "stories.json")
+PINNED = os.path.join(ROOT, "pinned.json")
+
+
+def pinned_queries():
+    """Searches to run on every build, for stories the feeds don't carry."""
+    try:
+        with open(PINNED) as fh:
+            return [q for q in json.load(fh).get("queries", []) if q.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+PINNED_DEADLINE = 90        # seconds; a third-party outage must not stall a build
+
+
+def add_pinned(stories, log=print):
+    """Search for each pinned query and append the result as its own story.
+
+    These are not clustered with the feed articles: the query already defines
+    the story, and its outlets are mostly outside the ratings registry, so it
+    would only add noise to the clustering corpus.
+    """
+    queries = pinned_queries()
+    if not queries:
+        return 0
+    log(f"searching {len(queries)} pinned quer" + ("y…" if len(queries) == 1 else "ies…"))
+    added = 0
+    deadline = time.time() + PINNED_DEADLINE
+    for query in queries:
+        if time.time() > deadline:
+            log(f"  ! skipped {len(queries) - added} quer"
+                + ("y" if len(queries) - added == 1 else "ies")
+                + f" — {PINNED_DEADLINE}s budget spent")
+            break
+        story, error = gdelt.make_story(query)
+        if not story:
+            log(f"  ! '{query[:40]}': {error}")
+            continue
+        stories.append(story)
+        added += 1
+        log(f"  + '{query[:40]}' -> {story['outlet_count']} outlets "
+            f"({story['rated_count']} rated)")
+    return added
 
 
 def run(max_age=0, min_outlets=2, log=print):
@@ -22,6 +67,9 @@ def run(max_age=0, min_outlets=2, log=print):
 
     log("clustering…")
     stories, pools = analyze.analyze(articles, min_outlets=min_outlets)
+
+    add_pinned(stories, log=log)
+    stories.sort(key=lambda s: -s["rank"])
 
     # Optional upgrade: an LLM writes the summary where credentials allow it.
     # Cached stories cost nothing and failures keep the extract, so this is safe

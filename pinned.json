@@ -1,0 +1,6 @@
+{
+  "_comment": "Stories to search for and include on every build, for coverage the RSS feeds miss. Each entry is a search query run against GDELT (see gdelt.py). Keep the list short: GDELT allows one request every five seconds, so each query adds ~6s to a build.",
+  "queries": [
+    "Venkata Vasamsetty ICE detained green card"
+  ]
+}

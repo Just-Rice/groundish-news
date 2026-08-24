@@ -20,6 +20,7 @@
     </div>
     <div class="topbar-actions">
       <span id="freshness" class="freshness" title="When the feeds were last pulled"></span>
+      <button id="addbtn" class="btn ghost">Add story</button>
       <button id="keybtn" class="btn ghost" hidden>Gemini key</button>
       <button id="refresh" class="btn">Refresh feeds</button>
     </div>
@@ -32,6 +33,18 @@
     <button class="tab" data-view="about">Method</button>
   </nav>
 </header>
+
+<div class="keypanel" id="addpanel" hidden>
+  <p>Search world news coverage for a story these feeds missed, and add it to your
+     view. Type a few distinctive words — a name, a place, what happened.</p>
+  <input id="addinput" type="search" placeholder="e.g. Venkata Vasamsetty ICE detained"
+         autocomplete="off">
+  <div class="row">
+    <button id="addgo" class="btn">Search</button>
+    <span id="addstate" class="freshness"></span>
+  </div>
+  <div id="addresult"></div>
+</div>
 
 <div class="keypanel" id="keypanel" hidden>
   <p>Paste a Google AI Studio key to write summaries on demand. It is stored only in

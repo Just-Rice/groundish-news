@@ -9,6 +9,7 @@
   --faint: #8d96a0;
   --accent: #1f6feb;
 
+  --unrated: #7a828c;
   --left: #2f6fd0;
   --lean_left: #7aa7e8;
   --center: #9aa3ae;
@@ -31,6 +32,7 @@
     --muted: #98a3b0;
     --faint: #6e7c8c;
     --accent: #58a6ff;
+    --unrated: #6b7280;
     --left: #4b8bee;
     --lean_left: #6f9be0;
     --center: #8b95a1;
@@ -178,12 +180,23 @@ main { padding-top: 20px; padding-bottom: 48px; }
   background: var(--bg); color: var(--text);
 }
 .keypanel .row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+#addpanel { width: min(460px, calc(100vw - 32px)); }
+#addresult:not(:empty) {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+  font-size: 12.5px; color: var(--muted); max-height: 260px; overflow-y: auto;
+}
+#addresult .hit { padding: 3px 0; }
+#addresult .hit b { color: var(--text); font-weight: 600; }
 
 .badge {
   display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em;
   text-transform: uppercase; padding: 3px 9px; border-radius: 20px; margin-bottom: 8px;
 }
 .badge.bs-right { background: color-mix(in srgb, var(--right) 16%, transparent); color: var(--right); border: 1px solid color-mix(in srgb, var(--right) 40%, transparent); }
+.badge.added {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+}
 .badge.bs-left  { background: color-mix(in srgb, var(--left) 16%, transparent);  color: var(--left);  border: 1px solid color-mix(in srgb, var(--left) 40%, transparent); }
 
 .biasbar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
@@ -194,6 +207,8 @@ main { padding-top: 20px; padding-bottom: 48px; }
 .seg-center { background: var(--center); }
 .seg-lean_right { background: var(--lean_right); }
 .seg-right { background: var(--right); }
+.seg-unrated { background: var(--unrated); background-image:
+  repeating-linear-gradient(45deg, rgba(255,255,255,.14) 0 4px, transparent 4px 8px); }
 
 .biaslegend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 7px; }
 .biaslegend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
@@ -222,6 +237,7 @@ main { padding-top: 20px; padding-bottom: 48px; }
 .frame.center { border-top-color: var(--center); }
 .frame.lean_right { border-top-color: var(--lean_right); }
 .frame.right { border-top-color: var(--right); }
+.frame.unrated { border-top-color: var(--unrated); }
 .frame h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .frame h4 span { color: var(--faint); font-weight: 500; }
 .frame a { overflow-wrap: anywhere; display: block; font-size: 13.5px; line-height: 1.4; text-decoration: none; margin-bottom: 9px; }

@@ -4,6 +4,9 @@
 const BUCKETS = [
   ["left", "Left"], ["lean_left", "Lean Left"], ["center", "Center"],
   ["lean_right", "Lean Right"], ["right", "Right"],
+  // Outlets found by search that aren't in the ratings registry. Counted and
+  // shown, but never used to place a story on the spectrum.
+  ["unrated", "Unrated"],
 ];
 const LABEL = Object.fromEntries(BUCKETS);
 const READS_KEY = "groundish.reads.v1";
@@ -57,6 +60,8 @@ const Data = {
   },
 
   async story(id) {
+    const mine = Added.all().find((s) => s.id === id);
+    if (mine) return mine;
     if (this.mode === "server") {
       const res = await fetch("api/story/" + encodeURIComponent(id));
       return res.ok ? res.json() : null;
@@ -70,6 +75,11 @@ const Data = {
       const res = await fetch("api/stories?" + params);
       const payload = await res.json();
       if (!res.ok) throw new Error(payload.error || "request failed");
+      // Stories added by search live in this browser, so they are merged in
+      // whichever mode is serving the rest.
+      const mine = Added.all();
+      payload.stories = mine.concat(payload.stories.filter((s) => !s.added_by));
+      payload.total += mine.length;
       return payload;
     }
     const q = (params.get("q") || "").trim().toLowerCase();
@@ -78,7 +88,7 @@ const Data = {
     const sort = params.get("sort") || "rank";
     const limit = parseInt(params.get("limit") || "60", 10);
 
-    let out = this.bundle.stories.filter((s) => {
+    let out = Added.all().concat(this.bundle.stories).filter((s) => {
       if (s.outlet_count < minOutlets) return false;
       if (blindspot === "any" && !s.blindspot) return false;
       if ((blindspot === "left" || blindspot === "right") && s.blindspot !== blindspot) return false;
@@ -98,6 +108,9 @@ const Data = {
       right: (a, b) => b.skew - a.skew,
     };
     out.sort(keys[sort] || keys.rank);
+    // A story you went looking for outranks the feed: its rank is just its outlet
+    // count, which would otherwise bury it beneath the day's big wire stories.
+    out = out.filter((s) => s.added_by).concat(out.filter((s) => !s.added_by));
 
     return {
       meta: this.bundle.meta,
@@ -181,9 +194,11 @@ function storyCard(story) {
   const card = el("article", "story");
 
   if (story.blindspot) {
-    const badge = el("div", "badge bs-" + story.blindspot,
-      "Blindspot: missing on the " + story.blindspot);
-    card.appendChild(badge);
+    card.appendChild(el("div", "badge bs-" + story.blindspot,
+      "Blindspot: missing on the " + story.blindspot));
+  }
+  if (story.added_by) {
+    card.appendChild(el("div", "badge added", "Added by search: " + story.added_by));
   }
 
   card.appendChild(el("h2", null, story.title));
@@ -209,8 +224,14 @@ function storyCard(story) {
   card.appendChild(biasLegend(story.bar, story.outlet_count));
 
   const pills = el("div", "pills");
-  const [factCls, factText] = factLabel(story.factuality);
-  pills.appendChild(el("span", "pill " + factCls, factText));
+  if (story.factuality != null) {
+    const [factCls, factText] = factLabel(story.factuality);
+    pills.appendChild(el("span", "pill " + factCls, factText));
+  }
+  if (story.unrated_count) {
+    pills.appendChild(el("span", "pill",
+      `${story.unrated_count} unrated outlet${story.unrated_count === 1 ? "" : "s"}`));
+  }
   if (story.owner_flag) {
     const pill = el("span", "pill flag");
     pill.appendChild(el("b", null, pct(story.owner_concentration)));
@@ -226,6 +247,11 @@ function storyCard(story) {
   const open = el("button", "btn", "Compare coverage");
   open.addEventListener("click", () => { location.hash = "story/" + story.id; });
   actions.appendChild(open);
+  if (story.added_by) {
+    const drop = el("button", "btn ghost", "Remove");
+    drop.addEventListener("click", () => { Added.remove(story.id); show(state.view); });
+    actions.appendChild(drop);
+  }
   card.appendChild(actions);
 
   if (story.framing.length > 1) {
@@ -243,6 +269,186 @@ function storyCard(story) {
   return card;
 }
 
+
+/* ------------------------------------------------- adding a story by search
+   The feed list is a fixed set of front pages, so a story they didn't carry
+   cannot appear however widely it was reported. This searches GDELT's global
+   news index instead — free, no key, and reachable from a browser because it
+   sends `Access-Control-Allow-Origin: *`. Google News RSS does not, which is
+   why it can't be used here.
+
+   GDELT asks for no more than one request every five seconds per IP — nothing a
+   person clicking a button will approach — and answers a breach with plain text
+   rather than JSON, so a non-JSON body is treated as an error.
+
+   Domains in the ratings registry keep their lean; everything else is kept but
+   marked unrated and left out of the bias bar, because we have no basis for
+   placing it. This mirrors gdelt.py on the Python side. */
+const ADDED_STORE = "groundish.added.v1";
+const GDELT_ENDPOINT = "https://api.gdeltproject.org/api/v2/doc/doc";
+
+const Added = {
+  all() {
+    try { return JSON.parse(localStorage.getItem(ADDED_STORE)) || []; }
+    catch (_) { return []; }
+  },
+  save(list) {
+    try { localStorage.setItem(ADDED_STORE, JSON.stringify(list)); } catch (_) {}
+  },
+  add(story) {
+    const list = this.all().filter((s) => s.id !== story.id);
+    list.unshift(story);
+    this.save(list);
+  },
+  remove(id) { this.save(this.all().filter((s) => s.id !== id)); },
+};
+
+function ratedDomains() {
+  const sources = (Data.bundle && Data.bundle.sources) || state.sourceList || [];
+  const map = {};
+  for (const source of sources) {
+    for (const url of source.urls || []) {
+      // Plain regex rather than `new URL()`, so this stays verifiable outside a
+      // browser (JavaScriptCore has no URL global).
+      const parsed = /^[a-z]+:\/\/([^/?#]+)/i.exec(url);
+      if (!parsed) continue;
+      let host = parsed[1].toLowerCase().replace(/:\d+$/, "");
+      if (host.includes("news.google.com")) {
+        const found = url.match(/site:([\w.\-]+)/);
+        host = found ? found[1] : "";
+      }
+      host = host.replace(/^(www|rss|feeds?|api|moxie|search|chaski|feedx|m)\./, "");
+      if (host && !(host in map)) map[host] = source;
+    }
+  }
+  return map;
+}
+
+async function searchNews(query) {
+  const params = new URLSearchParams({
+    query, mode: "artlist", maxrecords: "60", format: "json",
+    sort: "datedesc", timespan: "7d",
+  });
+  const res = await fetch(GDELT_ENDPOINT + "?" + params);
+  const body = await res.text();
+  try {
+    return (JSON.parse(body).articles) || [];
+  } catch (_) {
+    throw new Error(body.trim().slice(0, 110) || `HTTP ${res.status}`);
+  }
+}
+
+/* Rows -> articles, mirroring to_articles() in gdelt.py. */
+function toArticles(rows, query) {
+  const rated = ratedDomains();
+  const seen = new Set();
+  const out = [];
+  for (const row of rows) {
+    const url = row.url || "";
+    const title = (row.title || "").split(/\s+/).join(" ").trim();
+    if (!url || title.length < 15 || seen.has(url.toLowerCase())) continue;
+    seen.add(url.toLowerCase());
+
+    const host = (row.domain || "").toLowerCase()
+      .replace(/^(www|rss|feeds?|api|moxie|search|chaski|feedx|m)\./, "");
+    const source = rated[host];
+    let when = null;
+    const stamp = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(row.seendate || "");
+    if (stamp) {
+      when = new Date(Date.UTC(+stamp[1], +stamp[2] - 1, +stamp[3],
+                               +stamp[4], +stamp[5], +stamp[6]));
+    }
+    out.push({
+      id: url.toLowerCase().slice(-16),
+      title, summary: "", url,
+      published: when ? when.toISOString() : null,
+      published_ts: when ? when.getTime() / 1000 : null,
+      source_id: source ? source.id : "gdelt:" + host,
+      source: source ? source.name : host,
+      lean: source ? source.lean : null,
+      lean_slug: source ? source.lean_slug : "unrated",
+      lean_label: source ? source.lean_label : "Unrated",
+      factuality: source ? source.factuality : "unrated",
+      owner: source ? source.owner : host,
+      country: source ? source.country : (row.sourcecountry || "?"),
+      rated: Boolean(source),
+      added_by: query,
+    });
+  }
+  return out;
+}
+
+/* A compact counterpart to analyze.single_story(). The query already defines the
+   story, so nothing is clustered — the whole result set is one story. */
+function buildStory(articles, query) {
+  const bySource = new Map();
+  for (const article of articles) {
+    if (!bySource.has(article.source_id)) bySource.set(article.source_id, article);
+  }
+  const outlets = [...bySource.values()];
+  const rated = outlets.filter((a) => a.lean !== null);
+
+  const bar = {};
+  for (const [slug] of BUCKETS) bar[slug] = 0;
+  for (const a of outlets) bar[a.lean_slug] = (bar[a.lean_slug] || 0) + 1;
+
+  const owners = {};
+  for (const a of outlets) owners[a.owner] = (owners[a.owner] || 0) + 1;
+  const ownerList = Object.entries(owners).sort((x, y) => y[1] - x[1]);
+
+  const framing = [];
+  for (const [slug, label] of BUCKETS) {
+    const side = outlets.filter((a) => a.lean_slug === slug);
+    if (side.length) {
+      framing.push({ lean_slug: slug, lean_label: label, count: side.length,
+                     article: side[0] });
+    }
+  }
+
+  const times = articles.map((a) => a.published_ts).filter(Boolean);
+  const lead = rated.find((a) => a.lean === 0) || rated[0] || outlets[0];
+  const scale = { high: 1, "mostly-high": 0.75, mixed: 0.45, low: 0.1 };
+  const factScores = rated.map((a) => (a.factuality in scale ? scale[a.factuality] : 0.5));
+  let hash = 7;
+  for (const ch of query.toLowerCase()) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+
+  return {
+    id: "q" + Math.abs(hash).toString(16),
+    title: lead ? lead.title : query,
+    title_source: lead ? lead.source : "",
+    summary: "",
+    consensus: null,
+    added_by: query,
+    article_count: articles.length,
+    outlet_count: outlets.length,
+    rated_count: rated.length,
+    unrated_count: outlets.length - rated.length,
+    bar,
+    shares: {},
+    camp_rates: { left: 0, center: 0, right: 0 },
+    skew: rated.length
+      ? Math.round((rated.reduce((t, a) => t + a.lean, 0) / rated.length) * 1000) / 1000
+      : 0,
+    // A blindspot compares coverage rates across the whole polled pool; a single
+    // search has no pool to compare against, so it abstains.
+    blindspot: null,
+    factuality: factScores.length
+      ? factScores.reduce((a, b) => a + b, 0) / factScores.length : null,
+    owner_top: ownerList.length ? ownerList[0][0] : "",
+    owner_top_count: ownerList.length ? ownerList[0][1] : 0,
+    owner_concentration: ownerList.length ? ownerList[0][1] / outlets.length : 0,
+    owner_flag: false,
+    owners: ownerList,
+    countries: [...new Set(outlets.map((a) => a.country))].sort(),
+    first_published: times.length ? new Date(Math.min(...times) * 1000).toISOString() : null,
+    last_published: times.length ? new Date(Math.max(...times) * 1000).toISOString() : null,
+    first_outlet: lead ? lead.source : null,
+    rank: outlets.length,
+    framing,
+    articles: outlets.sort((a, b) =>
+      (a.lean === null ? 9 : a.lean) - (b.lean === null ? 9 : b.lean)),
+  };
+}
 
 /* --------------------------------------------------- on-demand LLM summaries
    Summaries are written when someone asks for one, not for all 200 stories up
@@ -823,6 +1029,60 @@ function renderAbout() {
 </div>`;
 }
 
+function setupAddPanel() {
+  const panel = $("#addpanel");
+  const input = $("#addinput");
+  const status = $("#addstate");
+  const result = $("#addresult");
+
+  $("#addbtn").addEventListener("click", () => {
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) input.focus();
+  });
+  document.addEventListener("click", (event) => {
+    if (!panel.hidden && !panel.contains(event.target) && event.target !== $("#addbtn")) {
+      panel.hidden = true;
+    }
+  });
+
+  const run = async () => {
+    const query = input.value.trim();
+    if (query.length < 3) { status.textContent = "Type a few more characters"; return; }
+    $("#addgo").disabled = true;
+    status.textContent = "Searching world coverage…";
+    result.textContent = "";
+    try {
+      const articles = toArticles(await searchNews(query), query);
+      if (!articles.length) {
+        status.textContent = "No coverage found in the last 7 days";
+        return;
+      }
+      const story = buildStory(articles, query);
+      Added.add(story);
+      status.textContent = "";
+      result.textContent = "";
+      const rated = story.rated_count;
+      result.appendChild(el("div", "hit",
+        `Added — ${story.outlet_count} outlets` +
+        (rated ? `, ${rated} with a bias rating.` :
+                 `, none of them in the ratings registry, so this story has no bias bar.`)));
+      for (const article of story.articles.slice(0, 8)) {
+        const hit = el("div", "hit");
+        hit.appendChild(el("b", null, article.source));
+        hit.appendChild(document.createTextNode(" — " + article.title.slice(0, 70)));
+        result.appendChild(hit);
+      }
+      show(state.view);
+    } catch (err) {
+      status.textContent = "Search failed: " + err.message.slice(0, 80);
+    } finally {
+      $("#addgo").disabled = false;
+    }
+  };
+  $("#addgo").addEventListener("click", run);
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter") run(); });
+}
+
 function setupKeyPanel() {
   const panel = $("#keypanel");
   const input = $("#keyinput");
@@ -937,6 +1197,7 @@ async function init() {
     $("#keybtn").hidden = false;
   }
   setupKeyPanel();
+  setupAddPanel();
 
   $("#tabs").addEventListener("click", (event) => {
     const tab = event.target.closest(".tab");
