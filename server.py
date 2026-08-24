@@ -77,7 +77,9 @@ def filter_stories(stories, q):
 
     out = []
     for story in stories:
-        if story["outlet_count"] < min_outlets:
+        # A story pinned by search is never filtered out for being small — it is
+        # there because someone asked for it.
+        if not story.get("added_by") and story["outlet_count"] < min_outlets:
             continue
         if blindspot in ("left", "right") and story["blindspot"] != blindspot:
             continue

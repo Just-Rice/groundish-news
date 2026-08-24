@@ -77,9 +77,14 @@ const Data = {
       if (!res.ok) throw new Error(payload.error || "request failed");
       // Stories added by search live in this browser, so they are merged in
       // whichever mode is serving the rest.
+      // Merge stories added in this browser with any the pipeline pinned. They
+      // use different id schemes, so dedupe on the query text instead; the local
+      // copy wins because it is the fresher search.
       const mine = Added.all();
-      payload.stories = mine.concat(payload.stories.filter((s) => !s.added_by));
-      payload.total += mine.length;
+      const seen = new Set(mine.map((s) => (s.added_by || "").toLowerCase()));
+      payload.stories = mine.concat(
+        payload.stories.filter((s) => !seen.has((s.added_by || "\u0000").toLowerCase())));
+      payload.total = payload.stories.length;
       return payload;
     }
     const q = (params.get("q") || "").trim().toLowerCase();
@@ -88,8 +93,13 @@ const Data = {
     const sort = params.get("sort") || "rank";
     const limit = parseInt(params.get("limit") || "60", 10);
 
-    let out = Added.all().concat(this.bundle.stories).filter((s) => {
-      if (s.outlet_count < minOutlets) return false;
+    const mine = Added.all();
+    const claimed = new Set(mine.map((s) => (s.added_by || "").toLowerCase()));
+    let out = mine
+      .concat(this.bundle.stories.filter((s) => !claimed.has((s.added_by || "\u0000").toLowerCase())))
+      .filter((s) => {
+      // A story you went looking for is never filtered out for being small.
+      if (!s.added_by && s.outlet_count < minOutlets) return false;
       if (blindspot === "any" && !s.blindspot) return false;
       if ((blindspot === "left" || blindspot === "right") && s.blindspot !== blindspot) return false;
       if (q) {
@@ -980,13 +990,22 @@ async function renderBias() {
     box.appendChild(biasLegend(state.meta.bar, total));
   }
 
-  const leanScore = BUCKETS.reduce((sum, [slug], i) => sum + (bar[slug] || 0) * (i - 2), 0) / data.total;
+  // Only the five political buckets carry a position. "Unrated" sits last in
+  // BUCKETS, so weighting by index would have scored it +3 — further right than
+  // Right — and quietly skewed the verdict.
+  const WEIGHTS = { left: -2, lean_left: -1, center: 0, lean_right: 1, right: 2 };
+  const scored = Object.keys(WEIGHTS).reduce((n, slug) => n + (bar[slug] || 0), 0);
+  const leanScore = scored
+    ? Object.entries(WEIGHTS).reduce((sum, [slug, w]) => sum + (bar[slug] || 0) * w, 0) / scored
+    : 0;
   const verdict = Math.abs(leanScore) < 0.35 ? "fairly balanced"
     : leanScore < 0 ? "tilted left" : "tilted right";
   box.appendChild(el("h3", null, "Read on the whole"));
   box.appendChild(el("p", null,
     `Your average article sits at ${leanScore.toFixed(2)} on a −2 (left) to +2 (right) ` +
-    `scale — ${verdict}.`));
+    `scale — ${verdict}.` +
+    (bar.unrated ? ` ${bar.unrated} article${bar.unrated === 1 ? "" : "s"} came from ` +
+      "outlets with no rating and are left out of that figure." : "")));
 
   box.appendChild(el("h3", null, "Outlets you open most"));
   const table = el("table", "owners");

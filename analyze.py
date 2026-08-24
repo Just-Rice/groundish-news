@@ -70,7 +70,7 @@ def build_story(articles, indices, pools, now_ts):
     bar["unrated"] = 0
     for art in outlets:
         bar[art.get("lean_slug", "unrated")] = bar.get(art.get("lean_slug", "unrated"), 0) + 1
-    total = len(rated)                      # the bar's denominator is rated outlets
+    total = len(rated)                      # drives skew, factuality, blindspots
     total_outlets = len(outlets)
 
     camp_counts = Counter(_camp(a["lean"]) for a in rated)
@@ -137,7 +137,9 @@ def build_story(articles, indices, pools, now_ts):
         "rated_count": total,
         "unrated_count": total_outlets - total,
         "bar": bar,
-        "shares": {k: (v / total if total else 0) for k, v in bar.items()},
+        # Denominator is every outlet, because the bar counts every outlet —
+        # dividing by the rated subset made the shares sum to well over 1.
+        "shares": {k: (v / total_outlets if total_outlets else 0) for k, v in bar.items()},
         "added_by": next((a["added_by"] for a in members if a.get("added_by")), None),
         "camp_counts": dict(camp_counts),
         "camp_rates": {k: round(v, 4) for k, v in rates.items()},
