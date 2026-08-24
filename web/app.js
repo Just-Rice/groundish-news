@@ -324,18 +324,61 @@ function ratedDomains() {
   return map;
 }
 
-async function searchNews(query) {
+const GDELT_MIN_GAP = 6000;        // GDELT allows one request every five seconds
+let lastSearchAt = 0;
+
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+function isRateLimited(status, body) {
+  return status === 429 || /limit requests|one every 5 seconds/i.test(body);
+}
+
+/* GDELT rate-limits by IP, and the allowance is shared by everyone on the same
+   connection, so a burst from one machine locks out the whole network for a
+   while. Requests are spaced client-side and a refusal is retried with backoff
+   rather than surfaced as a dead end. */
+async function searchNews(query, onStatus = () => {}) {
+  const gap = GDELT_MIN_GAP - (Date.now() - lastSearchAt);
+  if (gap > 0) {
+    onStatus(`Waiting ${Math.ceil(gap / 1000)}s — one search every 5 seconds…`);
+    await sleep(gap);
+  }
+
   const params = new URLSearchParams({
     query, mode: "artlist", maxrecords: "60", format: "json",
     sort: "datedesc", timespan: "7d",
   });
-  const res = await fetch(GDELT_ENDPOINT + "?" + params);
-  const body = await res.text();
-  try {
-    return (JSON.parse(body).articles) || [];
-  } catch (_) {
-    throw new Error(body.trim().slice(0, 110) || `HTTP ${res.status}`);
+
+  const attempts = 4;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    lastSearchAt = Date.now();
+    let res, body;
+    try {
+      res = await fetch(GDELT_ENDPOINT + "?" + params);
+      body = await res.text();
+    } catch (err) {
+      throw new Error("Could not reach GDELT — check your connection. (" + err.message + ")");
+    }
+    try {
+      return JSON.parse(body).articles || [];
+    } catch (_) {
+      // A refusal comes back as prose, not JSON.
+      if (isRateLimited(res.status, body) && attempt < attempts - 1) {
+        const wait = 8 * (attempt + 1);
+        onStatus(`Rate limited — retrying in ${wait}s (attempt ${attempt + 2} of ${attempts})…`);
+        await sleep(wait * 1000);
+        continue;
+      }
+      if (isRateLimited(res.status, body)) {
+        throw new Error(
+          "GDELT is rate-limiting this network. It allows one search every five " +
+          "seconds per IP address, shared by everyone on your connection. " +
+          "Give it a minute and try again.");
+      }
+      throw new Error(body.trim().slice(0, 180) || `HTTP ${res.status}`);
+    }
   }
+  return [];
 }
 
 /* Rows -> articles, mirroring to_articles() in gdelt.py. */
@@ -1052,7 +1095,8 @@ function setupAddPanel() {
     status.textContent = "Searching world coverage…";
     result.textContent = "";
     try {
-      const articles = toArticles(await searchNews(query), query);
+      const articles = toArticles(
+        await searchNews(query, (text) => { status.textContent = text; }), query);
       if (!articles.length) {
         status.textContent = "No coverage found in the last 7 days";
         return;
@@ -1074,7 +1118,9 @@ function setupAddPanel() {
       }
       show(state.view);
     } catch (err) {
-      status.textContent = "Search failed: " + err.message.slice(0, 80);
+      status.textContent = "";
+      result.textContent = "";
+      result.appendChild(el("div", "hit", err.message));
     } finally {
       $("#addgo").disabled = false;
     }
