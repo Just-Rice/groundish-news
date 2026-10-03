@@ -61,8 +61,14 @@ def main():
         payload = pipeline.run(max_age=max_age)
 
     os.makedirs(os.path.join(DOCS, "data"), exist_ok=True)
-    for name in ("index.html", "styles.css", "app.js"):
+    for name in ("styles.css", "app.js"):
         shutil.copy2(os.path.join(WEB, name), os.path.join(DOCS, name))
+    # Mark the page as static so app.js skips probing for the API, which on
+    # Pages is always a 404 that shows up as a console error.
+    with open(os.path.join(WEB, "index.html")) as fh:
+        html = fh.read().replace('<html lang="en">', '<html lang="en" data-static>', 1)
+    with open(os.path.join(DOCS, "index.html"), "w") as fh:
+        fh.write(html)
     # Tell GitHub Pages not to run the output through Jekyll.
     open(os.path.join(DOCS, ".nojekyll"), "w").close()
 

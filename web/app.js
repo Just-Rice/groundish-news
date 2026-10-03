@@ -34,6 +34,9 @@ const Data = {
   bundle: null,
 
   async init() {
+    // build_static.py marks the Pages copy of index.html, so the API probe
+    // (a guaranteed 404 there, logged as a console error) is skipped.
+    if (document.documentElement.hasAttribute("data-static")) return this.initStatic();
     try {
       const res = await fetch("api/meta", { cache: "no-store" });
       if (res.ok) {
@@ -41,6 +44,10 @@ const Data = {
         return this.mode;
       }
     } catch (_) { /* no API here — fall through to the static bundle */ }
+    return this.initStatic();
+  },
+
+  async initStatic() {
     const res = await fetch("data/bundle.json", { cache: "no-store" });
     if (!res.ok) throw new Error("no API and no data bundle");
     this.bundle = await res.json();
@@ -797,13 +804,32 @@ async function openStory(id) {
     }
   }
 
-  $("#modal-backdrop").hidden = false;
+  const backdrop = $("#modal-backdrop");
+  if (backdrop.hidden) modalOpener = document.activeElement;
+  backdrop.hidden = false;
   document.body.style.overflow = "hidden";
+  $("#modal-close").focus();
+}
+
+/* Keyboard focus moves into the dialog on open, stays inside it while open,
+   and returns to whatever opened it on close. */
+let modalOpener = null;
+function trapModalFocus(event) {
+  if (event.key !== "Tab" || $("#modal-backdrop").hidden) return;
+  const items = [...$(".modal").querySelectorAll("a[href], button:not([disabled]), summary")]
+    .filter((node) => node.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
 function closeModal(keepHash) {
+  const wasOpen = !$("#modal-backdrop").hidden;
   $("#modal-backdrop").hidden = true;
   document.body.style.overflow = "";
+  if (wasOpen && modalOpener && document.contains(modalOpener)) modalOpener.focus();
+  if (wasOpen) modalOpener = null;
   if (!keepHash && location.hash.startsWith("#story/")) location.hash = state.view;
 }
 
@@ -1091,6 +1117,19 @@ function renderAbout() {
 </div>`;
 }
 
+/* Opens or closes a header pop-over and keeps its button's aria-expanded in
+   step. The header buttons wrap onto a second row on phones, so the panel is
+   placed just below its button instead of at a fixed offset that covered them. */
+function togglePanel(panel, button, open = panel.hidden) {
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) {
+    const top = Math.round(button.getBoundingClientRect().bottom + 8);
+    panel.style.top = top + "px";
+    panel.style.maxHeight = (window.innerHeight - top - 12) + "px";
+  }
+}
+
 function setupAddPanel() {
   const panel = $("#addpanel");
   const input = $("#addinput");
@@ -1098,12 +1137,12 @@ function setupAddPanel() {
   const result = $("#addresult");
 
   $("#addbtn").addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
+    togglePanel(panel, $("#addbtn"));
     if (!panel.hidden) input.focus();
   });
   document.addEventListener("click", (event) => {
     if (!panel.hidden && !panel.contains(event.target) && event.target !== $("#addbtn")) {
-      panel.hidden = true;
+      togglePanel(panel, $("#addbtn"), false);
     }
   });
 
@@ -1160,7 +1199,7 @@ function setupKeyPanel() {
   paint();
 
   $("#keybtn").addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
+    togglePanel(panel, $("#keybtn"));
     if (!panel.hidden) {
       input.value = Keys.get();
       input.focus();
@@ -1169,7 +1208,7 @@ function setupKeyPanel() {
   $("#keysave").addEventListener("click", () => {
     Keys.set(input.value.trim());
     paint();
-    panel.hidden = true;
+    togglePanel(panel, $("#keybtn"), false);
     show(state.view);                 // re-render so the buttons appear
   });
   $("#keyclear").addEventListener("click", () => {
@@ -1180,7 +1219,7 @@ function setupKeyPanel() {
   });
   document.addEventListener("click", (event) => {
     if (!panel.hidden && !panel.contains(event.target) && event.target !== $("#keybtn")) {
-      panel.hidden = true;
+      togglePanel(panel, $("#keybtn"), false);
     }
   });
 }
@@ -1202,6 +1241,8 @@ function show(view) {
   state.rendered = view;
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("active", tab.dataset.view === view);
+    if (tab.dataset.view === view) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
   }
   $("#filters").hidden = view !== "stories";
   $("#result-count").textContent = "";
@@ -1296,8 +1337,13 @@ async function init() {
     if (event.target === $("#modal-backdrop")) closeModal();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeModal();
+    if (event.key !== "Escape") return;
+    closeModal();
+    for (const [panel, button] of [[$("#addpanel"), $("#addbtn")], [$("#keypanel"), $("#keybtn")]]) {
+      if (!panel.hidden) { togglePanel(panel, button, false); button.focus(); }
+    }
   });
+  document.addEventListener("keydown", trapModalFocus);
 
   let timer;
   const rerun = () => {
