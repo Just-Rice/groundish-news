@@ -90,6 +90,12 @@ h1 { font-size: 20px; margin: 0; letter-spacing: -.02em; }
 .btn.ghost { background: transparent; }
 
 .tabs { display: flex; gap: 4px; overflow-x: auto; }
+/* When tabs run off the right edge (phones), fade it as a hint to scroll.
+   app.js sets .more while there is more to the right. */
+.tabs.more {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+          mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent);
+}
 .tab {
   font: inherit; font-size: 14px; font-weight: 550;
   background: none; border: 0; border-bottom: 2px solid transparent;
@@ -104,7 +110,8 @@ h1 { font-size: 20px; margin: 0; letter-spacing: -.02em; }
 }
 
 /* --------------------------------------------------------------- filters */
-main { padding-top: 20px; padding-bottom: 48px; }
+/* main also carries .wrap, whose `padding: 0 20px` would otherwise zero these. */
+main.wrap { padding-top: 20px; padding-bottom: 48px; }
 .panel {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
   background: var(--surface); border: 1px solid var(--border);
@@ -136,18 +143,19 @@ main { padding-top: 20px; padding-bottom: 48px; }
 
 /* Collapsible consensus summary under each headline. */
 .tldr { margin: -2px 0 11px; }
-.tldr > summary {
+.tldr-head { display: flex; align-items: center; flex-wrap: wrap; }
+.tldr-toggle {
+  font: inherit; background: none; border: 0; margin: 0;
   cursor: pointer; font-size: 12.5px; color: var(--muted);
-  list-style: none; display: inline-flex; align-items: center; gap: 5px;
+  display: inline-flex; align-items: center; gap: 5px;
   user-select: none; padding: 2px 0;
 }
-.tldr > summary::-webkit-details-marker { display: none; }
-.tldr > summary::before {
+.tldr-toggle::before {
   content: "›"; font-size: 14px; line-height: 1;
   transition: transform .15s ease; display: inline-block;
 }
-.tldr[open] > summary::before { transform: rotate(90deg); }
-.tldr > summary:hover { color: var(--accent); }
+.tldr.open .tldr-toggle::before { transform: rotate(90deg); }
+.tldr-toggle:hover { color: var(--accent); }
 .tldr .body {
   margin: 7px 0 0; padding: 0 0 0 11px;
   border-left: 2px solid var(--border);
@@ -155,14 +163,14 @@ main { padding-top: 20px; padding-bottom: 48px; }
 }
 .tldr .via { display: block; margin-top: 6px; font-size: 11.5px; color: var(--faint); }
 
-/* "Write with Gemini" control inside a summary toggle. */
-.tldr > summary .gen {
+/* "Write with Gemini" control beside the summary toggle. */
+.tldr .gen {
   margin-left: 10px; font: inherit; font-size: 11px; font-weight: 600;
   padding: 2px 9px; border-radius: 20px; cursor: pointer;
   border: 1px solid var(--border); background: var(--surface-2); color: var(--muted);
 }
-.tldr > summary .gen:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
-.tldr > summary .gen:disabled { opacity: .7; cursor: default; }
+.tldr .gen:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+.tldr .gen:disabled { opacity: .7; cursor: default; }
 .tldr .note { color: var(--warn); }
 .dots::after {
   content: "…"; display: inline-block; width: 1em; text-align: left;
@@ -218,9 +226,10 @@ main { padding-top: 20px; padding-bottom: 48px; }
 .seg-unrated { background: var(--unrated); background-image:
   repeating-linear-gradient(45deg, rgba(255,255,255,.14) 0 4px, transparent 4px 8px); }
 
-.biaslegend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 7px; }
+.biaslegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 7px; }
 .biaslegend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
 .biaslegend b { color: var(--text); font-weight: 600; }
+.biaslegend + .story-meta { margin-top: 12px; }
 
 .pills { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
 .pill {
@@ -246,8 +255,8 @@ main { padding-top: 20px; padding-bottom: 48px; }
 .frame.lean_right { border-top-color: var(--lean_right); }
 .frame.right { border-top-color: var(--right); }
 .frame.unrated { border-top-color: var(--unrated); }
-.frame h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-.frame h4 span { color: var(--faint); font-weight: 500; }
+.frame h3, .frame h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.frame h3 span, .frame h4 span { color: var(--faint); font-weight: 500; }
 .frame a { overflow-wrap: anywhere; display: block; font-size: 13.5px; line-height: 1.4; text-decoration: none; margin-bottom: 9px; }
 .frame a:hover .hl { text-decoration: underline; }
 .frame .src { display: block; font-size: 11.5px; color: var(--muted); margin-top: 2px; }
@@ -265,6 +274,8 @@ main { padding-top: 20px; padding-bottom: 48px; }
   position: absolute; top: 6px; right: 6px; min-width: 44px; min-height: 44px; border-radius: 8px; background: none; border: 0;
   font-size: 26px; line-height: 1; color: var(--muted); cursor: pointer;
 }
+/* Keep the first line (badge or headline) clear of the 44px close button. */
+#modal-body > :first-child { margin-right: 36px; }
 .modal h2 { overflow-wrap: anywhere; margin: 0 8px 8px 0; font-size: 21px; line-height: 1.3; }
 .modal h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 22px 0 10px; }
 
@@ -278,6 +289,7 @@ main { padding-top: 20px; padding-bottom: 48px; }
   display: flex; align-items: center; gap: 6px;
 }
 .outlet-tag i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.outlet-lean { display: block; font-size: 11.5px; font-weight: 400; color: var(--muted); }
 .outlet-row a { font-size: 14px; text-decoration: none; min-width: 0; overflow-wrap: anywhere; }
 .outlet-row a:hover { text-decoration: underline; }
 .outlet-row .when { margin-left: auto; font-size: 11.5px; color: var(--faint); white-space: nowrap; padding-left: 10px; }
@@ -293,11 +305,11 @@ main { padding-top: 20px; padding-bottom: 48px; }
 .card.center { border-left-color: var(--center); }
 .card.lean_right { border-left-color: var(--lean_right); }
 .card.right { border-left-color: var(--right); }
-.card h4 { margin: 0 0 3px; font-size: 14.5px; }
+.card h3 { margin: 0 0 3px; font-size: 14.5px; }
 .card p { margin: 0; font-size: 12px; color: var(--muted); }
 .card .n { float: right; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .section-head { margin: 26px 0 12px; display: flex; align-items: baseline; gap: 10px; }
-.section-head h3 { margin: 0; font-size: 15px; }
+.section-head h2 { margin: 0; font-size: 15px; }
 .section-head span { font-size: 12.5px; color: var(--muted); }
 
 .stat-row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); margin-bottom: 8px; }
@@ -311,8 +323,8 @@ table.owners td:last-child { text-align: right; color: var(--muted); font-varian
 .meter { height: 6px; border-radius: 3px; background: var(--accent); min-width: 2px; }
 
 .prose { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px 24px; }
-.prose h3 { margin-top: 22px; font-size: 15px; }
-.prose h3:first-child { margin-top: 0; }
+.prose h2 { margin: 22px 0 15px; font-size: 15px; }
+.prose h2:first-child { margin-top: 0; }
 .prose p, .prose li { color: var(--muted); font-size: 14px; }
 .prose strong { color: var(--text); }
 .prose code { background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
@@ -338,15 +350,19 @@ table.owners td:last-child { text-align: right; color: var(--muted); font-varian
   .outlet-row .when { margin-left: 0; padding-left: 0; }
   .keypanel { right: 16px; }
   /* 11px labels are hard to read on a phone; 12px is the floor here. */
-  .tab-count, .badge, .frame h4, .pill, .tldr .via, .frame .src,
-  .outlet-row .when, .tldr > summary .gen { font-size: 12px; }
+  .tab-count, .badge, .frame h3, .frame h4, .pill, .tldr .via, .frame .src,
+  .outlet-row .when, .outlet-lean, .tldr .gen { font-size: 12px; }
+  /* The header is ~170px here once its buttons wrap; pinned, it ate a fifth
+     of the screen. It scrolls away on phones instead. */
+  .topbar { position: static; }
+  .topbar-actions { flex-wrap: wrap; row-gap: 8px; }
 }
 
 /* Touch screens: every control at least 44px tall, without changing the
    desktop mouse layout. */
 @media (pointer: coarse) {
   .btn, .field select, .search, .keypanel input { min-height: 44px; }
-  .tldr > summary { min-height: 44px; }
-  .tldr > summary .gen { min-height: 36px; padding: 6px 12px; }
+  .tldr-toggle { min-height: 44px; }
+  .tldr .gen { min-height: 36px; padding: 6px 12px; }
   .foot .inline-tab { display: inline-block; padding: 12px 4px; margin: -12px -4px; }
 }
