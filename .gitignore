@@ -4,3 +4,4 @@ data/summaries.json
 docs/
 __pycache__/
 *.pyc
+node_modules/

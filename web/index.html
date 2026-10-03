@@ -19,14 +19,14 @@
       </div>
     </div>
     <div class="topbar-actions">
-      <span id="freshness" class="freshness" title="When the feeds were last pulled"></span>
-      <button id="addbtn" class="btn ghost">Add story</button>
-      <button id="keybtn" class="btn ghost" hidden>Gemini key</button>
+      <span id="freshness" class="freshness" title="When the feeds were last pulled" aria-live="polite"></span>
+      <button id="addbtn" class="btn ghost" aria-expanded="false" aria-controls="addpanel">Add story</button>
+      <button id="keybtn" class="btn ghost" aria-expanded="false" aria-controls="keypanel" hidden>Gemini key</button>
       <button id="refresh" class="btn">Refresh feeds</button>
     </div>
   </div>
-  <nav class="wrap tabs" id="tabs">
-    <button class="tab active" data-view="stories">Top Stories</button>
+  <nav class="wrap tabs" id="tabs" aria-label="Views">
+    <button class="tab active" data-view="stories" aria-current="page">Top Stories</button>
     <button class="tab" data-view="blindspots">Blindspots <span class="tab-count" id="blindspot-count"></span></button>
     <button class="tab" data-view="sources">Sources</button>
     <button class="tab" data-view="bias">My Bias</button>
@@ -37,7 +37,7 @@
 <div class="keypanel" id="addpanel" hidden>
   <p>Search world news coverage for a story these feeds missed, and add it to your
      view. Type a few distinctive words — a name, a place, what happened.</p>
-  <input id="addinput" type="search" placeholder="e.g. Venkata Vasamsetty ICE detained"
+  <input id="addinput" type="search" aria-label="Search world news for a story" placeholder="e.g. Venkata Vasamsetty ICE detained"
          autocomplete="off">
   <div class="row">
     <button id="addgo" class="btn">Search</button>
@@ -51,7 +51,7 @@
      this browser — never sent anywhere except Google, and never in the repository.
      Free keys: <a href="https://aistudio.google.com/apikey" target="_blank"
      rel="noopener noreferrer">aistudio.google.com/apikey</a></p>
-  <input id="keyinput" type="password" placeholder="AI Studio API key" autocomplete="off"
+  <input id="keyinput" type="password" aria-label="Google AI Studio API key" placeholder="AI Studio API key" autocomplete="off"
          spellcheck="false">
   <div class="row">
     <button id="keysave" class="btn">Save</button>
@@ -63,7 +63,7 @@
 <main class="wrap" id="main">
 
   <section class="panel" id="filters">
-    <input type="search" id="q" class="search" placeholder="Search headlines and outlets…" autocomplete="off">
+    <input type="search" id="q" class="search" aria-label="Search headlines and outlets" placeholder="Search headlines and outlets…" autocomplete="off">
     <label class="field">Sort
       <select id="sort">
         <option value="rank">Top stories</option>
@@ -96,7 +96,7 @@
 
 <footer class="wrap foot">
   <p>Groundish News reads public RSS feeds directly. Bias and factuality labels are hand-encoded
-     approximations of published third-party ratings — see <a href="#" data-view="about" class="inline-tab">Method</a>.</p>
+     approximations of published third-party ratings — see <a href="#about" data-view="about" class="inline-tab">Method</a>.</p>
 </footer>
 
 <script src="app.js"></script>

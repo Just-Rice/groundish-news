@@ -34,6 +34,9 @@ const Data = {
   bundle: null,
 
   async init() {
+    // build_static.py marks the Pages copy of index.html, so the API probe
+    // (a guaranteed 404 there, logged as a console error) is skipped.
+    if (document.documentElement.hasAttribute("data-static")) return this.initStatic();
     try {
       const res = await fetch("api/meta", { cache: "no-store" });
       if (res.ok) {
@@ -41,6 +44,10 @@ const Data = {
         return this.mode;
       }
     } catch (_) { /* no API here — fall through to the static bundle */ }
+    return this.initStatic();
+  },
+
+  async initStatic() {
     const res = await fetch("data/bundle.json", { cache: "no-store" });
     if (!res.ok) throw new Error("no API and no data bundle");
     this.bundle = await res.json();
@@ -214,7 +221,7 @@ function storyCard(story) {
   card.appendChild(el("h2", null, story.title));
 
   const meta = el("p", "story-meta");
-  meta.appendChild(el("b", null, story.outlet_count + " outlets"));
+  meta.appendChild(el("b", null, story.outlet_count + (story.outlet_count === 1 ? " outlet" : " outlets")));
   meta.appendChild(el("span", "dot"));
   meta.appendChild(document.createTextNode(story.article_count + " articles"));
   if (story.first_outlet) {
@@ -268,7 +275,7 @@ function storyCard(story) {
     const framing = el("div", "framing");
     for (const frame of story.framing) {
       const box = el("div", "frame " + frame.lean_slug);
-      const head = el("h4", null, frame.lean_label + " ");
+      const head = el("h3", null, frame.lean_label + " ");
       head.appendChild(el("span", null, "· " + frame.count));
       box.appendChild(head);
       box.appendChild(articleLink(frame, frame.lean_slug));
@@ -617,6 +624,7 @@ async function writeSummary(storyId) {
 
 /* The summary is stitched together from sentences the outlets themselves wrote,
    picked for cross-spectrum agreement — so the label says exactly that. */
+let tldrCount = 0;
 function consensusBlock(consensus, open, story) {
   const written = story ? Written.get(story.id) : null;
   const current = written || consensus;
@@ -628,13 +636,26 @@ function consensusBlock(consensus, open, story) {
   const canWrite = Boolean(story && canGenerate() && !(written && written.text));
   if (!hasText && !canWrite) return null;
 
-  const box = el("details", "tldr");
-  if (open) box.open = true;
-
-  const head = el("summary", null, "Summary");
+  // A disclosure button rather than <details>, so the "Write with Gemini"
+  // button can sit beside the toggle instead of nested inside <summary>
+  // (a button inside a button, which screen readers announce inconsistently).
+  const box = el("div", "tldr");
+  const head = el("div", "tldr-head");
+  const toggle = el("button", "tldr-toggle", "Summary");
+  toggle.type = "button";
+  head.appendChild(toggle);
   box.appendChild(head);
   const body = el("div", "body");
+  body.id = "tldr-" + (++tldrCount);
+  toggle.setAttribute("aria-controls", body.id);
   box.appendChild(body);
+  const setOpen = (value) => {
+    box.classList.toggle("open", value);
+    toggle.setAttribute("aria-expanded", String(value));
+    body.hidden = !value;
+  };
+  setOpen(Boolean(open));
+  toggle.addEventListener("click", () => setOpen(body.hidden));
 
   const paint = (entry, note) => {
     body.textContent = "";
@@ -664,9 +685,8 @@ function consensusBlock(consensus, open, story) {
 
   if (canWrite) {
     const button = el("button", "gen", hasText ? "Write with Gemini" : "Write a summary");
-    button.addEventListener("click", async (event) => {
-      event.preventDefault();
-      box.open = true;
+    button.addEventListener("click", async () => {
+      setOpen(true);
       button.disabled = true;
       button.textContent = "Writing";
       button.classList.add("dots");
@@ -741,7 +761,7 @@ async function openStory(id) {
   for (const frame of story.framing) {
     const box = el("div", "frame " + frame.lean_slug);
     const head = el("h4", null, frame.lean_label + " ");
-    head.appendChild(el("span", null, "· " + frame.count + " outlets"));
+    head.appendChild(el("span", null, "· " + frame.count + (frame.count === 1 ? " outlet" : " outlets")));
     box.appendChild(head);
     box.appendChild(articleLink(frame.article, frame.lean_slug));
     framing.appendChild(box);
@@ -754,9 +774,13 @@ async function openStory(id) {
     const tag = el("span", "outlet-tag");
     const swatch = el("i");
     swatch.style.background = `var(--${article.lean_slug})`;
-    swatch.title = article.lean_label;
+    swatch.setAttribute("aria-hidden", "true");
     tag.appendChild(swatch);
-    tag.appendChild(document.createTextNode(article.source));
+    // The lean is written out, not just colour-coded, so it reads on touch
+    // screens (no hover title) and for colour-blind readers.
+    const name = el("span", "outlet-name", article.source);
+    name.appendChild(el("span", "outlet-lean", article.lean_label));
+    tag.appendChild(name);
     row.appendChild(tag);
 
     const link = el("a", null, article.title);
@@ -797,13 +821,32 @@ async function openStory(id) {
     }
   }
 
-  $("#modal-backdrop").hidden = false;
+  const backdrop = $("#modal-backdrop");
+  if (backdrop.hidden) modalOpener = document.activeElement;
+  backdrop.hidden = false;
   document.body.style.overflow = "hidden";
+  $("#modal-close").focus();
+}
+
+/* Keyboard focus moves into the dialog on open, stays inside it while open,
+   and returns to whatever opened it on close. */
+let modalOpener = null;
+function trapModalFocus(event) {
+  if (event.key !== "Tab" || $("#modal-backdrop").hidden) return;
+  const items = [...$(".modal").querySelectorAll("a[href], button:not([disabled])")]
+    .filter((node) => node.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0], last = items[items.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
 }
 
 function closeModal(keepHash) {
+  const wasOpen = !$("#modal-backdrop").hidden;
   $("#modal-backdrop").hidden = true;
   document.body.style.overflow = "";
+  if (wasOpen && modalOpener && document.contains(modalOpener)) modalOpener.focus();
+  if (wasOpen) modalOpener = null;
   if (!keepHash && location.hash.startsWith("#story/")) location.hash = state.view;
 }
 
@@ -907,8 +950,8 @@ async function renderSources() {
     const group = payload.sources.filter((s) => s.lean_slug === slug);
     if (!group.length) continue;
     const head = el("div", "section-head");
-    head.appendChild(el("h3", null, label));
-    head.appendChild(el("span", null, `${group.length} outlets · ` +
+    head.appendChild(el("h2", null, label));
+    head.appendChild(el("span", null, `${group.length} outlet${group.length === 1 ? "" : "s"} · ` +
       `${group.reduce((n, s) => n + s.article_count, 0)} articles`));
     view.appendChild(head);
 
@@ -916,7 +959,7 @@ async function renderSources() {
     for (const source of group.sort((a, b) => b.article_count - a.article_count)) {
       const card = el("div", "card " + slug);
       card.appendChild(el("span", "n", String(source.article_count)));
-      card.appendChild(el("h4", null, source.name));
+      card.appendChild(el("h3", null, source.name));
       card.appendChild(el("p", null,
         `${source.owner} · ${source.country} · ${source.factuality} factuality`));
       if (source.error) {
@@ -928,7 +971,7 @@ async function renderSources() {
   }
 
   const head = el("div", "section-head");
-  head.appendChild(el("h3", null, "Ownership concentration"));
+  head.appendChild(el("h2", null, "Ownership concentration"));
   head.appendChild(el("span", null, "parent companies behind this batch"));
   view.appendChild(head);
   const table = el("table", "owners");
@@ -963,7 +1006,7 @@ async function renderBias() {
 
   if (!data.total) {
     const box = el("div", "prose");
-    box.appendChild(el("h3", null, "My Bias"));
+    box.appendChild(el("h2", null, "My Bias"));
     box.appendChild(el("p", null,
       "Nothing tracked yet. Every time you open an article from Groundish News, the lean of " +
       "the outlet you clicked is tallied here — locally, in this browser only. Read a few " +
@@ -976,12 +1019,12 @@ async function renderBias() {
   for (const [slug] of BUCKETS) bar[slug] = data.leans[slug] || 0;
 
   const box = el("div", "prose");
-  box.appendChild(el("h3", null, `Your reading — ${data.total} articles opened`));
+  box.appendChild(el("h2", null, `Your reading — ${data.total} articles opened`));
   box.appendChild(biasBar(bar, data.total));
   box.appendChild(biasLegend(bar, data.total));
 
   if (state.meta) {
-    box.appendChild(el("h3", null, "What was on offer"));
+    box.appendChild(el("h2", null, "What was on offer"));
     box.appendChild(el("p", null,
       "For comparison, this is the lean distribution of every article Groundish News pulled " +
       "in the current batch. A gap between the two bars is the interesting part."));
@@ -1000,14 +1043,14 @@ async function renderBias() {
     : 0;
   const verdict = Math.abs(leanScore) < 0.35 ? "fairly balanced"
     : leanScore < 0 ? "tilted left" : "tilted right";
-  box.appendChild(el("h3", null, "Read on the whole"));
+  box.appendChild(el("h2", null, "Read on the whole"));
   box.appendChild(el("p", null,
     `Your average article sits at ${leanScore.toFixed(2)} on a −2 (left) to +2 (right) ` +
     `scale — ${verdict}.` +
     (bar.unrated ? ` ${bar.unrated} article${bar.unrated === 1 ? "" : "s"} came from ` +
       "outlets with no rating and are left out of that figure." : "")));
 
-  box.appendChild(el("h3", null, "Outlets you open most"));
+  box.appendChild(el("h2", null, "Outlets you open most"));
   const table = el("table", "owners");
   const ranked = Object.entries(data.outlets).sort((a, b) => b[1] - a[1]).slice(0, 12);
   for (const [name, count] of ranked) {
@@ -1034,19 +1077,19 @@ function renderAbout() {
   const view = $("#view");
   view.innerHTML = `
 <div class="prose">
-  <h3>What this does</h3>
+  <h2>What this does</h2>
   <p>Groundish News pulls <strong>public RSS feeds from ${state.meta ? state.meta.source_count : "60+"} news outlets</strong>
      spanning the political spectrum, groups the articles that describe the same event into a single
      story, and shows you who covered it, how they headlined it, and who is missing.</p>
 
-  <h3>How stories are grouped</h3>
+  <h2>How stories are grouped</h2>
   <p>Headlines are turned into TF-IDF vectors (the summary contributes at a lower weight), and an
      inverted index over rare tokens produces candidate pairs so we never run a full N² comparison.
      Those pairs are merged strongest-first by <strong>average-link agglomerative clustering</strong>:
      two groups only join if their centroids are still similar, which prevents the chaining failure
      where A resembles B and B resembles C, so three unrelated stories collapse into one.</p>
 
-  <h3>Where the summaries come from</h3>
+  <h2>Where the summaries come from</h2>
   <p>There is no language model here and no API key, so each summary is <strong>extractive</strong>:
      it reuses sentences the outlets themselves published. The selection is what makes it
      non-partisan. A sentence scores well when the facts in it are repeated independently by many
@@ -1056,7 +1099,7 @@ function renderAbout() {
      or rhetorical questions are pushed down; centre outlets break ties. It is a consensus extract,
      not neutral prose written from scratch, and the app says so under every summary.</p>
 
-  <h3>How blindspots are decided</h3>
+  <h2>How blindspots are decided</h2>
   <p>A blindspot is a story that one side of the spectrum is largely not running. Rather than compare
      raw shares of coverage, Groundish News compares <strong>coverage rates</strong>: of the right-leaning
      outlets polled, what fraction carried this story, versus the left-leaning ones? Any hand-built
@@ -1065,14 +1108,14 @@ function renderAbout() {
      has at least 5 outlets, one side's rate is at or below 7%, another side's is at least 12% across
      at least 3 outlets, and the louder side out-covers the quieter one by 2.5×.</p>
 
-  <h3>What the labels are, and are not</h3>
+  <h2>What the labels are, and are not</h2>
   <p>The lean, factuality and ownership values live in one editable table in <code>sources.py</code>.
      They are <strong>hand-encoded approximations</strong> of ratings published by AllSides, Ad Fontes
      and Media Bias/Fact Check. They are not licensed data, they describe an outlet's overall output
      rather than any single article, and media-bias ratings are contested and US-centric to begin with.
      Disagree with one? Change the number and re-run — everything downstream reads from that table.</p>
 
-  <h3>Honest limits</h3>
+  <h2>Honest limits</h2>
   <ul>
     <li>RSS feeds carry recent front-page and section items, not an outlet's full output. An outlet
         can look silent on a story it covered outside the sampling window.</li>
@@ -1084,11 +1127,24 @@ function renderAbout() {
         weigh the same.</li>
   </ul>
 
-  <h3>Running it</h3>
+  <h2>Running it</h2>
   <p><code>python3 server.py</code> serves the site and refreshes feeds when the cache is older than
      15 minutes. <code>python3 pipeline.py</code> rebuilds <code>data/stories.json</code> on its own.
      No dependencies beyond the Python standard library.</p>
 </div>`;
+}
+
+/* Opens or closes a header pop-over and keeps its button's aria-expanded in
+   step. The header buttons wrap onto a second row on phones, so the panel is
+   placed just below its button instead of at a fixed offset that covered them. */
+function togglePanel(panel, button, open = panel.hidden) {
+  panel.hidden = !open;
+  button.setAttribute("aria-expanded", String(open));
+  if (open) {
+    const top = Math.round(button.getBoundingClientRect().bottom + 8);
+    panel.style.top = top + "px";
+    panel.style.maxHeight = (window.innerHeight - top - 12) + "px";
+  }
 }
 
 function setupAddPanel() {
@@ -1098,12 +1154,12 @@ function setupAddPanel() {
   const result = $("#addresult");
 
   $("#addbtn").addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
+    togglePanel(panel, $("#addbtn"));
     if (!panel.hidden) input.focus();
   });
   document.addEventListener("click", (event) => {
     if (!panel.hidden && !panel.contains(event.target) && event.target !== $("#addbtn")) {
-      panel.hidden = true;
+      togglePanel(panel, $("#addbtn"), false);
     }
   });
 
@@ -1126,7 +1182,7 @@ function setupAddPanel() {
       result.textContent = "";
       const rated = story.rated_count;
       result.appendChild(el("div", "hit",
-        `Added — ${story.outlet_count} outlets` +
+        `Added — ${story.outlet_count} outlet${story.outlet_count === 1 ? "" : "s"}` +
         (rated ? `, ${rated} with a bias rating.` :
                  `, none of them in the ratings registry, so this story has no bias bar.`)));
       for (const article of story.articles.slice(0, 8)) {
@@ -1160,7 +1216,7 @@ function setupKeyPanel() {
   paint();
 
   $("#keybtn").addEventListener("click", () => {
-    panel.hidden = !panel.hidden;
+    togglePanel(panel, $("#keybtn"));
     if (!panel.hidden) {
       input.value = Keys.get();
       input.focus();
@@ -1169,7 +1225,7 @@ function setupKeyPanel() {
   $("#keysave").addEventListener("click", () => {
     Keys.set(input.value.trim());
     paint();
-    panel.hidden = true;
+    togglePanel(panel, $("#keybtn"), false);
     show(state.view);                 // re-render so the buttons appear
   });
   $("#keyclear").addEventListener("click", () => {
@@ -1180,7 +1236,7 @@ function setupKeyPanel() {
   });
   document.addEventListener("click", (event) => {
     if (!panel.hidden && !panel.contains(event.target) && event.target !== $("#keybtn")) {
-      panel.hidden = true;
+      togglePanel(panel, $("#keybtn"), false);
     }
   });
 }
@@ -1202,6 +1258,11 @@ function show(view) {
   state.rendered = view;
   for (const tab of document.querySelectorAll(".tab")) {
     tab.classList.toggle("active", tab.dataset.view === view);
+    if (tab.dataset.view === view) {
+      tab.setAttribute("aria-current", "page");
+      tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
+    else tab.removeAttribute("aria-current");
   }
   $("#filters").hidden = view !== "stories";
   $("#result-count").textContent = "";
@@ -1272,6 +1333,12 @@ async function init() {
     link.addEventListener("click", (event) => { event.preventDefault(); navigate(link.dataset.view); });
   });
   window.addEventListener("hashchange", route);
+  const tabs = $("#tabs");
+  const hintTabs = () => tabs.classList.toggle("more",
+    tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 2);
+  tabs.addEventListener("scroll", hintTabs, { passive: true });
+  window.addEventListener("resize", hintTabs);
+  hintTabs();
   $("#refresh").addEventListener("click", async () => {
     if (Data.mode === "static") {
       const button = $("#refresh");
@@ -1296,8 +1363,13 @@ async function init() {
     if (event.target === $("#modal-backdrop")) closeModal();
   });
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") closeModal();
+    if (event.key !== "Escape") return;
+    closeModal();
+    for (const [panel, button] of [[$("#addpanel"), $("#addbtn")], [$("#keypanel"), $("#keybtn")]]) {
+      if (!panel.hidden) { togglePanel(panel, button, false); button.focus(); }
+    }
   });
+  document.addEventListener("keydown", trapModalFocus);
 
   let timer;
   const rerun = () => {
