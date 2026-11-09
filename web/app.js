@@ -690,9 +690,15 @@ function consensusBlock(consensus, open, story) {
   return box;
 }
 
+// Links come from other people's feeds: only ever point at a web page, never a
+// javascript: or data: URL that a broken or hostile feed slipped in.
+function safeUrl(url) {
+  return /^https?:\/\//i.test(url || "") ? url : "#";
+}
+
 function articleLink(item, leanSlug) {
   const link = el("a");
-  link.href = item.url || "#";
+  link.href = safeUrl(item.url);
   link.target = "_blank";
   link.rel = "noopener noreferrer";
   link.appendChild(el("span", "hl", item.title));
@@ -760,7 +766,7 @@ async function openStory(id) {
     row.appendChild(tag);
 
     const link = el("a", null, article.title);
-    link.href = article.url || "#";
+    link.href = safeUrl(article.url);
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.addEventListener("click", () => recordRead(article));

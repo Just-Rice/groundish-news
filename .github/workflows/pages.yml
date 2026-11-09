@@ -52,6 +52,20 @@ jobs:
         if: env.ANTHROPIC_API_KEY != ''
         run: pip install --quiet anthropic
 
+      # Summaries are cached in data/summaries.json so each build only asks the
+      # LLM about stories it has not seen. Every run starts from a fresh
+      # checkout, so without carrying the file over, every build re-summarised
+      # every story: hundreds of calls each half hour instead of a handful.
+      # Cache entries are immutable, so save under a new key each run and
+      # restore the newest one.
+      - name: Restore the summary cache
+        if: env.GEMINI_API_KEY != '' || env.ANTHROPIC_API_KEY != ''
+        uses: actions/cache@v4
+        with:
+          path: data/summaries.json
+          key: summaries-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: summaries-
+
       - name: Fetch feeds and build the site
         run: python3 build_static.py 0
 

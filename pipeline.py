@@ -41,10 +41,12 @@ def add_pinned(stories, log=print):
     log(f"searching {len(queries)} pinned quer" + ("y…" if len(queries) == 1 else "ies…"))
     added = 0
     deadline = time.time() + PINNED_DEADLINE
-    for query in queries:
+    for n, query in enumerate(queries):
         if time.time() > deadline:
-            log(f"  ! skipped {len(queries) - added} quer"
-                + ("y" if len(queries) - added == 1 else "ies")
+            # Count what was never tried, not what didn't succeed: failed
+            # searches already logged themselves above.
+            left = len(queries) - n
+            log(f"  ! skipped {left} quer" + ("y" if left == 1 else "ies")
                 + f" — {PINNED_DEADLINE}s budget spent")
             break
         story, error = gdelt.make_story(query)
