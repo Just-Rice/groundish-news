@@ -51,6 +51,22 @@ def _find(node, *names):
     return None
 
 
+def _first_text(node, *names):
+    """Text of the first child with any, trying `names` in order of preference.
+
+    An item often carries an empty element ahead of the real one: Media RSS's
+    <media:content url="..."/> is a "content" too, and it sits before the
+    description in several feeds.
+    """
+    for name in names:
+        for child in node:
+            if _strip_ns(child.tag) == name:
+                text = _text(child)
+                if text:
+                    return text
+    return ""
+
+
 def _link(node):
     # RSS: <link>url</link>.  Atom: <link rel="alternate" href="url"/>
     best = ""
@@ -141,7 +157,7 @@ def parse(data, source):
             continue
         seen.add(key)
 
-        summary = _text(_find(node, "description", "summary", "content", "encoded"))
+        summary = _first_text(node, "description", "summary", "encoded", "content")
         if is_gnews:
             summary = ""              # Google News summaries are just link markup
         if len(summary) > 400:
