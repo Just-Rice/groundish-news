@@ -1237,7 +1237,9 @@ function navigate(view) {
 }
 
 function route() {
-  const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
+  // decodeURIComponent throws on a stray "%" (a link cut short); the page then never drew.
+  let hash = location.hash.replace(/^#/, "");
+  try { hash = decodeURIComponent(hash); } catch { /* use it as it stands */ }
   if (hash.startsWith("story/")) {
     openStory(hash.slice("story/".length));
     if (!state.rendered) show(state.view);
